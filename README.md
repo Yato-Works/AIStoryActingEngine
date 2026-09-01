@@ -78,6 +78,22 @@ python main.py <novel> --job --resume        # クラッシュ・中断からの
 TTS Step は 1 セグメントごとに進捗と checkpoint を記録するため、途中で死んでも
 DB の done-set から続きを実行できる。詳細は `docs/adr/0003-job-system.md`。
 
+### JSON-RPC Worker（常駐プロセス / ADR-0004）
+
+Desktop（Phase 3）から呼ぶための常駐エンジン。stdio 上の改行区切り JSON-RPC 2.0。
+
+```bash
+# 常駐起動（until EOF）
+python worker.py
+
+# 1 回テスト（パイプで複数リクエスト）
+echo '{"jsonrpc":"2.0","id":1,"method":"ping"}' | python worker.py
+```
+
+主なメソッド: `initialize` / `ping` / `list_books` / `get_events` / `search` /
+`start_job`（非同期実行, 即 job_id 返却）/ `get_job`（進捗ポーリング）/
+`cancel_job`（協調的キャンセル）。詳細は `docs/adr/0004-json-rpc-worker.md`。
+
 
 ## Phase 1 の構成（Story Engine）
 

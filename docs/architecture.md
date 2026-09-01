@@ -71,6 +71,10 @@ C++ → Python Worker → Transformers / TTS / OCR → Result JSON → C++
 
 PyTorch / Transformers / ONNX Runtime / llama.cpp bindings / TTS / OCR / embedding はすべてこの中に閉じる。
 
+Phase 2.5 で常駐 Worker 化（ADR-0004）: `worker.py` が stdio 上の JSON-RPC 2.0 で
+`start_job` / `get_job` / `cancel_job` を提供。ジョブ実行はバックグラウンドスレッド、
+状態は Job System（jobs/job_steps）が DB に記録し、C++ がポーリングする。
+
 ### LLM Abstraction
 
 ```

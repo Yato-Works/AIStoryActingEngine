@@ -19,7 +19,7 @@ from pathlib import Path
 from analyzer import OllamaStoryAnalyzer, merge_state, normalize_id
 from audio import concat_audio, export_m4b, probe_duration
 from director import CastingDirector, NARRATOR, RuleBasedDirector, CharacterAwareDirector
-from jobs import COMPLETED, FAILED, JobManager, RUNNING
+from jobs import CANCELLED, COMPLETED, FAILED, JobCancelled, JobManager, RUNNING
 from memory import MemoryEngine
 from models import Character, Dossier, Segment, StoryState
 from schema import clamp, normalize_emotion, normalize_segment_type, validate_performance_doc
@@ -177,8 +177,11 @@ def _direct_segments(memory: MemoryEngine, state: StoryState,
 
 
 def analyze_book(novel_path: Path, memory: MemoryEngine, resume: bool = False,
-                 model: str = "qwen3:4b") -> None:
-    """チャンク解析 → 配役 → 演出まで（Job System の analyze Step の本体）。"""
+                 model: str = "qwen3:4b", should_stop=None) -> None:
+    """チャンク解析 → 配役 → 演出まで（Job System の analyze Step の本体）。
+
+    should_stop() が True を返すと JobCancelled を raise する（協調的キャンセル）。
+    """
     text = novel_path.read_text(encoding="utf-8")
     analyzer = OllamaStoryAnalyzer(model=model)
     director = CharacterAwareDirector()
@@ -199,6 +202,8 @@ def analyze_book(novel_path: Path, memory: MemoryEngine, resume: bool = False,
     # ---- 解析 → 配役 → 演出 ----
     state: StoryState = memory.load_state()
     for item in chunks:
+        if should_stop is not None and should_stop():
+            raise JobCancelled("analyze をキャンセル")
         gi, chapter = item["index"], item["chapter"]
         if gi in done_chunks:
             print(f"  ⏭ チャンク {gi + 1}（{chapter}章）は解析済み — スキップ")
@@ -242,10 +247,11 @@ def run(novel_path: Path, provider_name: str = "edge", resume: bool = False,
 
 
 def synthesize_all(memory: MemoryEngine, provider_name: str = "edge",
-                   resume: bool = False, report=None) -> int:
+                   resume: bool = False, report=None, should_stop=None) -> int:
     """未合成セグメントを TTS（Job System の tts Step の本体）。
 
     report(progress, checkpoint) で 1 セグメントごとに進捗を通知する。
+    should_stop() が True を返すと JobCancelled（協調的キャンセル）。
     戻り値は新規合成したセグメント数。done-set（segments.audio_path）が
     真実源なので、途中で死んでも次回は続きから再開される。
     """
@@ -259,6 +265,8 @@ def synthesize_all(memory: MemoryEngine, provider_name: str = "edge",
     todo = [s for s in segments if s.id not in done_audio and s.performance]
     ext = getattr(provider, "ext", ".mp3")
     for i, seg in enumerate(todo, 1):
+        if should_stop is not None and should_stop():
+            raise JobCancelled("tts をキャンセル")
         clip = audio_dir / f"{seg.id}{ext}"
         provider.synthesize(seg.text, seg.performance, clip)  # type: ignore[arg-type]
         memory.set_audio(seg.id, str(clip))
@@ -326,10 +334,11 @@ def produce(memory: MemoryEngine, provider_name: str = "edge", resume: bool = Fa
 
 def run_pipeline_job(novel_path: Path, provider_name: str = "edge",
                      resume: bool = False, no_tts: bool = False,
-                     model: str = "qwen3:4b") -> MemoryEngine:
+                     model: str = "qwen3:4b", should_stop=None) -> MemoryEngine:
     """小説処理を pipeline Job（analyze → tts → export）として実行する（ADR-0003）。
 
     中断・クラッシュ時は `--job --resume` で DB の done-set から再開する。
+    should_stop() が True を返すと CANCELLED 遷移して終了する。
     """
     memory = MemoryEngine(DB_PATH, _slugify(novel_path.name), title=novel_path.stem)
     memory.append_event("BOOK_IMPORTED", source=str(novel_path),
@@ -345,10 +354,17 @@ def run_pipeline_job(novel_path: Path, provider_name: str = "edge",
     jm.transition(job_id, RUNNING)
     print(f"🧭 Job {job_id}: analyze → tts → export")
 
+    def check() -> None:
+        if should_stop is not None and should_stop():
+            raise JobCancelled("キャンセル要求")
+
     try:
+        check()
         jm.run_step(job_id, 1, "analyze",
                     lambda report: analyze_book(novel_path, memory,
-                                                resume=resume, model=model))
+                                                resume=resume, model=model,
+                                                should_stop=should_stop))
+        check()
         if no_tts:
             jm.ensure_step(job_id, 2, "tts")
             jm.finish_step(job_id, 2, skip=True)
@@ -356,13 +372,19 @@ def run_pipeline_job(novel_path: Path, provider_name: str = "edge",
         else:
             jm.run_step(job_id, 2, "tts",
                         lambda report: synthesize_all(memory, provider_name,
-                                                      resume=resume, report=report),
+                                                      resume=resume, report=report,
+                                                      should_stop=should_stop),
                         progress_total=memory.count_segments())
+        check()
         jm.run_step(job_id, 3, "export",
                     lambda report: (export_contracts(memory, OUT_DIR / memory.book_id),
                                     export_audio(memory))[1])
         jm.transition(job_id, COMPLETED)
         print(f"✅ Job {job_id} 完了")
+    except JobCancelled:
+        jm.transition(job_id, CANCELLED)
+        print(f"🛑 Job {job_id} キャンセル")
+        return memory
     except Exception as exc:
         jm.transition(job_id, FAILED, error=str(exc))
         print(f"❌ Job {job_id} 失敗: {exc}")

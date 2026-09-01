@@ -53,6 +53,10 @@ class JobSystemError(RuntimeError):
     pass
 
 
+class JobCancelled(JobSystemError):
+    """cancel_job による協調的キャンセル（FAILED ではなく CANCELLED 遷移）。"""
+
+
 class JobManager:
     """jobs / job_steps / job_artifacts を管理する。
 

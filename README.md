@@ -56,8 +56,11 @@ Phase 1 からの進化（詳細は `docs/adr/0002-character-intelligence-and-du
 単体テスト（LLM・TTS 不要）:
 
 ```bash
-cd workers/python/engine/tests
-python test_phase2.py   # 全 39 項目
+cd workers/python
+pip install -r requirements.txt -r requirements-dev.txt
+pytest                 # repo ルートの pytest.ini が tests/ を解決（12 tests）
+# または従来のスクリプト実行も可能:
+python engine/tests/test_phase2.py   # 全 39 項目
 ```
 
 

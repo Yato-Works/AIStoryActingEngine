@@ -4,8 +4,10 @@ __pycache__/
 .venv/
 venv/
 
-# PoC output
+# PoC / engine output
 workers/python/poc/output/
+workers/python/engine/output/
+workers/python/engine/data/
 
 # OS
 Thumbs.db
@@ -22,3 +24,11 @@ CMakeLists.txt.user
 
 # Node (future cloud)
 node_modules/
+
+# engine 一時ファイル
+workers/python/engine/run*.log
+workers/python/engine/run_err.log
+workers/python/engine/run.done
+workers/python/engine/poc_*.log
+workers/python/engine/poc_err.txt
+workers/python/engine/gap_*.wav

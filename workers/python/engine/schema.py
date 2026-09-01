@@ -141,6 +141,7 @@ PERFORMANCE_EXAMPLE = {
                 "pace": 0.9,
                 "pitch": 0.0,
                 "volume": 1.0,
+                "carryover": False,
             },
         }
     ],

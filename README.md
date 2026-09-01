@@ -31,8 +31,8 @@ AIが小説を「読み上げる」のではなく、**「演じる」**ため�
 
 ## 開発フェーズ
 
-- [ ] **Phase 0** — PoC：小説 → キャラクター/物語理解 → キャスティング → 演技指示 → 音声（Python完結）
-- [ ] **Phase 1** — Story Engine：Character / Scene / Relationship / Memory をSQLiteへ。物語状態を維持した演技
+- [x] **Phase 0** — PoC：小説 → キャラクター/物語理解 → キャスティング → 演技指示 → 音声（Python完結）
+- [x] **Phase 1** — Story Engine：Character / Scene / Relationship / Memory をSQLiteへ。物語状態を維持した演技
 - [ ] **Phase 2** — Voice Director 本格化：人格・関係性・感情状態の維持
 - [ ] **Phase 3** — Desktop：Qt/QML + C++ Core
 - [ ] **Phase 4** — Local TTS 統合（GPU利用・VRAM管理）
@@ -40,17 +40,27 @@ AIが小説を「読み上げる」のではなく、**「演じる」**ため�
 - [ ] **Phase 6** — Mobile Player（Flutter・聴くだけ）
 - [ ] **Phase 7** — Cloud（Sync / Cloud TTS / Billing）
 
-## Phase 0 の構成
+## Phase 1 の構成（Story Engine）
 
 ```
-workers/python/poc/
-├── main.py      # パイプライン起動
+workers/python/engine/
+├── main.py      # パイプライン起動（CLI）
 ├── schema.py    # performance.json 等の契約スキーマ
-├── models.py    # データモデル
+├── models.py    # データモデル（Pydantic）
+├── memory.py    # Memory Engine（SQLite + Event Log + FTS5 + 感情の余韻）
 ├── analyzer.py  # Story Analyzer (Ollama)
-├── director.py  # Voice Director (Rule Engine)
-└── tts.py       # TTS Provider アダプタ
+├── director.py  # Casting + Voice Director (Rule Engine)
+├── tts.py       # TTS Provider アダプタ（edge-tts / AivisSpeech）
+└── audio.py     # ffmpeg 連結
 ```
+
+Phase 0 からの進化:
+
+- **SQLite Memory Engine**: characters / relationships / scenes / segments / events / memories を永続化。DBが唯一の情報源（Single Source of Truth）
+- **Event Log**: `CHARACTER_CREATED` / `VOICE_ASSIGNED` / `SEGMENT_DIRECTED` / `AUDIO_GENERATED` / `EXPORT_COMPLETED` などを記録
+- **Resume**: 中断後に `--resume` でDBの進捗から再開（解析済みチャンク・音声済みセグメントをスキップ）
+- **感情の余韻（carryover）**: 直前チャンクの強い感情を時間減衰（`×0.55^チャンク差`）させ、次のチャンクの弱い感情に滲ませる
+- **FTS5 全文検索**: 日本語対応（文字分割 + フレーズ検索）。`--search 鈴の音` で記憶を検索
 
 実行：
 
@@ -59,11 +69,16 @@ cd workers/python
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-cd poc
-python main.py ..\..\samples\sample_novel.txt
+cd engine
+python main.py ..\..\samples\sample_novel_long.txt            # 全パイプライン（解析→演出→TTS→連結）
+python main.py <novel> --resume                               # 中断からの再開
+python main.py <novel> --no-tts                               # 解析と演出のみ
+python main.py --search 怒鳴                                  # FTS5 検索デモ
+python main.py --stats                                        # Event Log 表示
 ```
 
-出力は `workers/python/poc/output/` に生成されます。
+出力は `workers/python/engine/output/<book>/`（performance.json / characters.json / story_state.json / audiobook.wav）、
+DBは `workers/python/engine/data/story.db` に生成されます。
 
 ## ディレクトリ
 

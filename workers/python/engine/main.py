@@ -19,6 +19,7 @@ from pathlib import Path
 from analyzer import OllamaStoryAnalyzer, merge_state, normalize_id
 from audio import concat_audio, export_m4b, probe_duration
 from director import CastingDirector, NARRATOR, RuleBasedDirector, CharacterAwareDirector
+from jobs import COMPLETED, FAILED, JobManager, RUNNING
 from memory import MemoryEngine
 from models import Character, Dossier, Segment, StoryState
 from schema import clamp, normalize_emotion, normalize_segment_type, validate_performance_doc
@@ -175,15 +176,10 @@ def _direct_segments(memory: MemoryEngine, state: StoryState,
                   f"({directed.performance.intensity:.2f}, voice={directed.performance.voice})")
 
 
-def run(novel_path: Path, provider_name: str = "edge", resume: bool = False,
-        no_tts: bool = False, model: str = "qwen3:4b") -> MemoryEngine:
+def analyze_book(novel_path: Path, memory: MemoryEngine, resume: bool = False,
+                 model: str = "qwen3:4b") -> None:
+    """チャンク解析 → 配役 → 演出まで（Job System の analyze Step の本体）。"""
     text = novel_path.read_text(encoding="utf-8")
-    book_id = _slugify(novel_path.name)
-    out_dir = OUT_DIR / book_id
-    audio_dir = out_dir / "audio"
-    audio_dir.mkdir(parents=True, exist_ok=True)
-
-    memory = MemoryEngine(DB_PATH, book_id, title=novel_path.stem)
     analyzer = OllamaStoryAnalyzer(model=model)
     director = CharacterAwareDirector()
     rule_director = RuleBasedDirector()  # narrator 等のフォールバック用
@@ -236,58 +232,142 @@ def run(novel_path: Path, provider_name: str = "edge", resume: bool = False,
         arc = " → ".join(s.emotion for s in segments[-6:])
         print(f"     ✓ {len(segments)} セグメント {counts}  感情アーク末尾: {arc}")
 
+
+def run(novel_path: Path, provider_name: str = "edge", resume: bool = False,
+        no_tts: bool = False, model: str = "qwen3:4b") -> MemoryEngine:
+    """従来モードのエントリポイント（解析のみ実行し MemoryEngine を返す）。"""
+    memory = MemoryEngine(DB_PATH, _slugify(novel_path.name), title=novel_path.stem)
+    analyze_book(novel_path, memory, resume=resume, model=model)
     return memory
+
+
+def synthesize_all(memory: MemoryEngine, provider_name: str = "edge",
+                   resume: bool = False, report=None) -> int:
+    """未合成セグメントを TTS（Job System の tts Step の本体）。
+
+    report(progress, checkpoint) で 1 セグメントごとに進捗を通知する。
+    戻り値は新規合成したセグメント数。done-set（segments.audio_path）が
+    真実源なので、途中で死んでも次回は続きから再開される。
+    """
+    out_dir = OUT_DIR / memory.book_id
+    audio_dir = out_dir / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    provider = get_provider(provider_name)
+
+    segments = memory.load_segments()
+    done_audio = memory.audio_done() if resume else set()
+    todo = [s for s in segments if s.id not in done_audio and s.performance]
+    ext = getattr(provider, "ext", ".mp3")
+    for i, seg in enumerate(todo, 1):
+        clip = audio_dir / f"{seg.id}{ext}"
+        provider.synthesize(seg.text, seg.performance, clip)  # type: ignore[arg-type]
+        memory.set_audio(seg.id, str(clip))
+        memory.append_event("AUDIO_GENERATED", segment=seg.id)
+        if report:
+            report(i, {"segment": seg.id})
+    print(f"  🎙 TTS({provider.name}): {len(todo)} セグメント新規合成"
+          f"（DB記録済み {len(done_audio)}）")
+    return len(todo)
+
+
+def export_audio(memory: MemoryEngine) -> list[tuple[str, str]]:
+    """wav 連結 + チャプター付き M4B 生成（Job System の export Step の本体）。
+
+    戻り値は生成した成果物の (kind, path) リスト。
+    """
+    out_dir = OUT_DIR / memory.book_id
+    artifacts: list[tuple[str, str]] = []
+    parts = memory.audio_paths()
+    if not parts:
+        return artifacts
+
+    wav = out_dir / "audiobook.wav"
+    concat_audio([Path(p) for _, p in parts], wav)
+    duration = probe_duration(wav)
+    memory.append_event("EXPORT_COMPLETED", output=str(wav), duration=duration)
+    print(f"  🎧 {wav}（{duration:.1f} 秒）" if duration else f"  🎧 {wav}")
+    artifacts.append(("wav", str(wav)))
+
+    # ---- M4B（チャプター付きオーディオブック）----
+    try:
+        segs = memory.audio_segments()
+        titles = memory.chapter_titles()
+        m4b = export_m4b(
+            [(sid, ch, Path(p)) for sid, ch, p in segs],
+            out_dir / "audiobook.m4b",
+            chapter_titles={k: f"第{k}章 {v[:40]}" for k, v in titles.items()},
+            title=memory.book_title(),
+        )
+        duration = probe_duration(m4b)
+        memory.append_event("EXPORT_COMPLETED", output=str(m4b),
+                            duration=duration, format="m4b",
+                            chapters=len(titles) or 1)
+        print(f"  📕 {m4b}（チャプター {len(titles) or 1} つ"
+              + (f", {duration:.1f} 秒" if duration else "") + "）")
+        artifacts.append(("m4b", str(m4b)))
+    except Exception as exc:  # M4B は付加成果物。失敗しても wav は残す
+        print(f"  ⚠ M4B 生成をスキップ: {exc}")
+    return artifacts
 
 
 def produce(memory: MemoryEngine, provider_name: str = "edge", resume: bool = False,
             no_tts: bool = False) -> None:
     """契約 JSON エクスポート → TTS → 連結（DB が唯一の情報源）。"""
     out_dir = OUT_DIR / memory.book_id
-    audio_dir = out_dir / "audio"
-    audio_dir.mkdir(parents=True, exist_ok=True)
-    provider = get_provider(provider_name)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     exported = export_contracts(memory, out_dir)
     print(f"  ✓ performance.json / characters.json / story_state.json 保存（{exported} セグメント, 検証OK）")
 
-    segments = memory.load_segments()
-    done_audio = memory.audio_done() if resume else set()
     if not no_tts:
-        todo = [s for s in segments if s.id not in done_audio and s.performance]
-        ext = getattr(provider, "ext", ".mp3")
-        for seg in todo:
-            clip = audio_dir / f"{seg.id}{ext}"
-            provider.synthesize(seg.text, seg.performance, clip)  # type: ignore[arg-type]
-            memory.set_audio(seg.id, str(clip))
-            memory.append_event("AUDIO_GENERATED", segment=seg.id)
-        print(f"  🎙 TTS({provider.name}): {len(todo)} セグメント新規合成（DB記録済み {len(done_audio)}）")
+        synthesize_all(memory, provider_name, resume=resume)
+    export_audio(memory)
 
-    parts = memory.audio_paths()
-    if parts:
-        wav = out_dir / "audiobook.wav"
-        concat_audio([Path(p) for _, p in parts], wav)
-        duration = probe_duration(wav)
-        memory.append_event("EXPORT_COMPLETED", output=str(wav), duration=duration)
-        print(f"  🎧 {wav}（{duration:.1f} 秒）" if duration else f"  🎧 {wav}")
 
-        # ---- M4B（チャプター付きオーディオブック）----
-        try:
-            segs = memory.audio_segments()
-            titles = memory.chapter_titles()
-            m4b = export_m4b(
-                [(sid, ch, Path(p)) for sid, ch, p in segs],
-                out_dir / "audiobook.m4b",
-                chapter_titles={k: f"第{k}章 {v[:40]}" for k, v in titles.items()},
-                title=memory.book_title(),
-            )
-            duration = probe_duration(m4b)
-            memory.append_event("EXPORT_COMPLETED", output=str(m4b),
-                                duration=duration, format="m4b",
-                                chapters=len(titles) or 1)
-            print(f"  📕 {m4b}（チャプター {len(titles) or 1} つ"
-                  + (f", {duration:.1f} 秒" if duration else "") + "）")
-        except Exception as exc:  # M4B は付加成果物。失敗しても wav は残す
-            print(f"  ⚠ M4B 生成をスキップ: {exc}")
+def run_pipeline_job(novel_path: Path, provider_name: str = "edge",
+                     resume: bool = False, no_tts: bool = False,
+                     model: str = "qwen3:4b") -> MemoryEngine:
+    """小説処理を pipeline Job（analyze → tts → export）として実行する（ADR-0003）。
+
+    中断・クラッシュ時は `--job --resume` で DB の done-set から再開する。
+    """
+    memory = MemoryEngine(DB_PATH, _slugify(novel_path.name), title=novel_path.stem)
+    memory.append_event("BOOK_IMPORTED", source=str(novel_path),
+                        chars=len(novel_path.read_text(encoding="utf-8")))
+    jm = JobManager(memory)
+    job_id, resumed = jm.resume_or_create(
+        "pipeline", {"provider": provider_name, "model": model,
+                     "novel": str(novel_path), "no_tts": no_tts})
+    if resumed:
+        recovered = jm.recover_running_steps(job_id)
+        print(f"♻ Job {job_id} を再開"
+              + (f"（未完了 Step {recovered} 件をやり直し）" if recovered else ""))
+    jm.transition(job_id, RUNNING)
+    print(f"🧭 Job {job_id}: analyze → tts → export")
+
+    try:
+        jm.run_step(job_id, 1, "analyze",
+                    lambda report: analyze_book(novel_path, memory,
+                                                resume=resume, model=model))
+        if no_tts:
+            jm.ensure_step(job_id, 2, "tts")
+            jm.finish_step(job_id, 2, skip=True)
+            print("  ⏭ step 2(tts) は no-tts 指定のためスキップ")
+        else:
+            jm.run_step(job_id, 2, "tts",
+                        lambda report: synthesize_all(memory, provider_name,
+                                                      resume=resume, report=report),
+                        progress_total=memory.count_segments())
+        jm.run_step(job_id, 3, "export",
+                    lambda report: (export_contracts(memory, OUT_DIR / memory.book_id),
+                                    export_audio(memory))[1])
+        jm.transition(job_id, COMPLETED)
+        print(f"✅ Job {job_id} 完了")
+    except Exception as exc:
+        jm.transition(job_id, FAILED, error=str(exc))
+        print(f"❌ Job {job_id} 失敗: {exc}")
+        raise
+    return memory
 
 
 def export_contracts(memory: MemoryEngine, out_dir: Path) -> int:
@@ -353,6 +433,8 @@ def main() -> None:
     ap.add_argument("--model", default="qwen3:4b")
     ap.add_argument("--no-tts", action="store_true")
     ap.add_argument("--resume", action="store_true", help="DB の進捗から再開")
+    ap.add_argument("--job", action="store_true",
+                    help="Job System 経由で実行（analyze→tts→export を再開可能な Job に）")
     ap.add_argument("--search", metavar="QUERY", help="FTS5 全文検索デモ")
     ap.add_argument("--stats", action="store_true", help="Event Log 統計を表示")
     args = ap.parse_args()
@@ -368,9 +450,14 @@ def main() -> None:
 
     if not args.novel:
         ap.error("小説ファイルを指定するか --search / --stats を使ってください")
-    memory = run(args.novel, provider_name=args.provider, resume=args.resume,
-                 no_tts=args.no_tts, model=args.model)
-    produce(memory, provider_name=args.provider, resume=args.resume, no_tts=args.no_tts)
+    if args.job:
+        memory = run_pipeline_job(args.novel, provider_name=args.provider,
+                                  resume=args.resume, no_tts=args.no_tts,
+                                  model=args.model)
+    else:
+        memory = run(args.novel, provider_name=args.provider, resume=args.resume,
+                     no_tts=args.no_tts, model=args.model)
+        produce(memory, provider_name=args.provider, resume=args.resume, no_tts=args.no_tts)
     show_stats(memory)
 
 

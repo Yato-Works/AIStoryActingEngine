@@ -79,6 +79,20 @@ CREATE TABLE IF NOT EXISTS segments(
   PRIMARY KEY(book_id, id));
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, type TEXT, payload TEXT);
+-- ---- Job System (ADR-0003): Event Log が SSOT。ここは進捗/checkpoint のみ ----
+CREATE TABLE IF NOT EXISTS jobs(
+  id TEXT PRIMARY KEY, book_id TEXT, type TEXT, status TEXT,
+  payload TEXT, error TEXT,
+  created_at TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS job_steps(
+  job_id TEXT, seq INTEGER, name TEXT, status TEXT,
+  progress INTEGER DEFAULT 0, progress_total INTEGER DEFAULT 0,
+  checkpoint TEXT, error TEXT,
+  started_at TEXT, finished_at TEXT, updated_at TEXT,
+  PRIMARY KEY(job_id, seq));
+CREATE TABLE IF NOT EXISTS job_artifacts(
+  job_id TEXT, step_seq INTEGER, kind TEXT, path TEXT, created_at TEXT,
+  PRIMARY KEY(job_id, step_seq, kind, path));
 CREATE INDEX IF NOT EXISTS idx_segments_speaker ON segments(book_id, speaker);
 CREATE INDEX IF NOT EXISTS idx_memories_char ON memories(book_id, character_id);
 """

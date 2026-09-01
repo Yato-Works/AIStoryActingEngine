@@ -58,10 +58,25 @@ Phase 1 からの進化（詳細は `docs/adr/0002-character-intelligence-and-du
 ```bash
 cd workers/python
 pip install -r requirements.txt -r requirements-dev.txt
-pytest                 # repo ルートの pytest.ini が tests/ を解決（12 tests）
+pytest                 # repo ルートの pytest.ini が tests/ を解決（18 tests）
 # または従来のスクリプト実行も可能:
 python engine/tests/test_phase2.py   # 全 39 項目
 ```
+
+### Job System（Phase 2.5 / ADR-0003）
+
+`--job` フラグで、パイプライン全体が再開可能な Job（`analyze → tts → export`）として
+実行される。進捗・checkpoint・成果物は SQLite（`jobs` / `job_steps` / `job_artifacts`）
+に記録され、状態遷移は既存 Event Log に `JOB_*` / `STEP_*` として流れる
+（Event Log が Single Source of Truth の原則は維持）。
+
+```bash
+python main.py <novel> --job                 # Job System 経由で実行
+python main.py <novel> --job --resume        # クラッシュ・中断からの再開
+```
+
+TTS Step は 1 セグメントごとに進捗と checkpoint を記録するため、途中で死んでも
+DB の done-set から続きを実行できる。詳細は `docs/adr/0003-job-system.md`。
 
 
 ## Phase 1 の構成（Story Engine）

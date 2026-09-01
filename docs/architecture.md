@@ -183,6 +183,12 @@ IMPORT_BOOK → OCR → ANALYZE → CAST → DIRECT → TTS → MIX → EXPORT
 
 状態：`Pending / Running / Completed / Failed / Cancelled`
 
+Phase 2.5 で Python Worker 側に実装済み（ADR-0003）: `--job` で pipeline Job
+（analyze → tts → export）が走り、進捗 / checkpoint / 成果物は
+`jobs` / `job_steps` / `job_artifacts` テーブルに記録される。状態遷移は
+Event Log に `JOB_*` / `STEP_*` として流れ、**Event Log が SSOT の原則は維持**。
+Phase 3 の C++ Runtime はこのテーブルを監視するだけで UI 進捗表示と再開制御が可能。
+
 ### Event Log
 
 `BOOK_IMPORTED / CHARACTER_CREATED / RELATIONSHIP_CREATED / VOICE_ASSIGNED /

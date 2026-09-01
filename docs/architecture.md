@@ -172,6 +172,8 @@ Cloud: ElevenLabs / Other
 ### Audio Engine
 
 FFmpeg で `segment_001.wav...` → M4B（チャプター・cover・metadata埋め込み）。
+Phase 2.5 でチャプター対応済み: `scenes` テーブルの章ごとの先頭シーン説明を
+チャプタータイトルに変換し、ffmetadata 経由で `audiobook.m4b`（AAC 96kbps）に埋め込む。
 
 ### Job System
 

@@ -485,4 +485,31 @@ class MemoryEngine:
         ).fetchall()
         return [(r["id"], r["audio_path"]) for r in rows]
 
+    def audio_segments(self) -> list[tuple[str, int, str]]:
+        """音声済みセグメントを (id, chapter, path) で順番に返す（M4B チャプター用）。"""
+        rows = self.conn.execute(
+            """SELECT id, chapter, audio_path FROM segments
+               WHERE book_id=? AND audio_path IS NOT NULL ORDER BY id""",
+            (self.book_id,),
+        ).fetchall()
+        return [(r["id"], int(r["chapter"]), r["audio_path"]) for r in rows]
+
+    def chapter_titles(self) -> dict[int, str]:
+        """章ごとの最初のシーン説明をチャプタータイトルとして返す。"""
+        titles: dict[int, str] = {}
+        rows = self.conn.execute(
+            """SELECT chapter, description FROM scenes
+               WHERE book_id=? AND IFNULL(description,'')<>''
+               ORDER BY chapter, rowid""",
+            (self.book_id,),
+        ).fetchall()
+        for r in rows:
+            titles.setdefault(int(r["chapter"]), str(r["description"]))
+        return titles
+
+    def book_title(self) -> str:
+        row = self.conn.execute(
+            "SELECT title FROM books WHERE id=?", (self.book_id,)).fetchone()
+        return str(row["title"]) if row and row["title"] else self.book_id
+
 

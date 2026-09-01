@@ -106,7 +106,7 @@ Style-Bert-VITS2（ローカル高品質TTS）で走らせる場合:
 python main.py ..\..\samples\sample_novel_long.txt --provider sbv2
 ```
 
-出力は `workers/python/engine/output/<book>/`（performance.json / characters.json / story_state.json / audiobook.wav）、
+出力は `workers/python/engine/output/<book>/`（performance.json / characters.json / story_state.json / audiobook.wav / **audiobook.m4b（章チャプター埋め込み）**）、
 DBは `workers/python/engine/data/story.db` に生成されます。
 
 ## ディレクトリ

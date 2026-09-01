@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 from analyzer import OllamaStoryAnalyzer, merge_state, normalize_id
-from audio import concat_audio, probe_duration
+from audio import concat_audio, export_m4b, probe_duration
 from director import CastingDirector, NARRATOR, RuleBasedDirector, CharacterAwareDirector
 from memory import MemoryEngine
 from models import Character, Dossier, Segment, StoryState
@@ -269,6 +269,25 @@ def produce(memory: MemoryEngine, provider_name: str = "edge", resume: bool = Fa
         duration = probe_duration(wav)
         memory.append_event("EXPORT_COMPLETED", output=str(wav), duration=duration)
         print(f"  🎧 {wav}（{duration:.1f} 秒）" if duration else f"  🎧 {wav}")
+
+        # ---- M4B（チャプター付きオーディオブック）----
+        try:
+            segs = memory.audio_segments()
+            titles = memory.chapter_titles()
+            m4b = export_m4b(
+                [(sid, ch, Path(p)) for sid, ch, p in segs],
+                out_dir / "audiobook.m4b",
+                chapter_titles={k: f"第{k}章 {v[:40]}" for k, v in titles.items()},
+                title=memory.book_title(),
+            )
+            duration = probe_duration(m4b)
+            memory.append_event("EXPORT_COMPLETED", output=str(m4b),
+                                duration=duration, format="m4b",
+                                chapters=len(titles) or 1)
+            print(f"  📕 {m4b}（チャプター {len(titles) or 1} つ"
+                  + (f", {duration:.1f} 秒" if duration else "") + "）")
+        except Exception as exc:  # M4B は付加成果物。失敗しても wav は残す
+            print(f"  ⚠ M4B 生成をスキップ: {exc}")
 
 
 def export_contracts(memory: MemoryEngine, out_dir: Path) -> int:

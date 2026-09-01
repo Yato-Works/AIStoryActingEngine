@@ -82,5 +82,92 @@ def probe_duration(path: Path) -> float | None:
         return None
 
 
+# ----------------------------------------------------------------
+# M4B（チャプター付きオーディオブック）
+# ----------------------------------------------------------------
+
+def _chapter_ranges(parts: list, durations: list[float],
+                    gap_ms: int = 250) -> list[dict]:
+    """(segment_id, chapter, path) と各ファイルの秒数 → 章の (start, end) ms。
+
+    parts は音声の再生順に並んでいる前提。章の境界は「章番号が変わった時点」。
+    """
+    chapters: list[dict] = []
+    t = 0.0
+    for i, (_, chapter, _path) in enumerate(parts):
+        if not chapters or chapters[-1]["chapter"] != chapter:
+            if chapters:
+                chapters[-1]["end"] = t
+            chapters.append({"chapter": chapter, "start": t})
+        t += durations[i] * 1000
+        if gap_ms > 0 and i < len(parts) - 1:
+            t += gap_ms
+    if chapters:
+        chapters[-1]["end"] = t
+    return chapters
+
+
+def build_chapter_meta(parts: list, durations: list[float],
+                       chapter_titles: dict[int, str] | None = None,
+                       title: str = "", gap_ms: int = 250) -> str:
+    """FFmpeg の ffmetadata 形式（チャプター定義）を生成する純粋関数。"""
+    lines = [";FFMETADATA1"]
+    if title:
+        lines.append(f"title={title}")
+    for ch in _chapter_ranges(parts, durations, gap_ms):
+        name = ((chapter_titles or {}).get(ch["chapter"])
+                or f"第{ch['chapter']}章")
+        lines += ["", "[CHAPTER]", "TIMEBASE=1/1000",
+                  f"START={int(ch['start'])}", f"END={int(ch['end'])}",
+                  f"title={name}"]
+    return "\n".join(lines) + "\n"
+
+
+def export_m4b(parts: list[tuple[str, int, Path]], out_path: Path,
+               chapter_titles: dict[int, str] | None = None,
+               title: str = "", gap_ms: int = 250) -> Path:
+    """音声セグメント (id, chapter, path) を AAC 再エンコードで
+    チャプター付き M4B にする。ソースが wav/mp3 混在でも decode するので安全。
+    """
+    if not parts:
+        raise ValueError("連結する音声ファイルがありません")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg = _find_ffmpeg()
+
+    durations = [probe_duration(p) or 0.0 for _, _, p in parts]
+    list_file = out_path.with_suffix(".list.txt")
+    meta_file = out_path.with_suffix(".meta.txt")
+
+    gap: Path | None = None
+    if gap_ms > 0:
+        gap = out_path.parent / f".gap_{gap_ms}_m4b.wav"
+        if not gap.exists():
+            subprocess.run(
+                [ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                 "-t", f"{gap_ms / 1000:.3f}", str(gap)],
+                check=True, capture_output=True,
+            )
+
+    with list_file.open("w", encoding="utf-8") as f:
+        for i, (_, _, p) in enumerate(parts):
+            if gap and i > 0:
+                f.write(f"file '{gap.resolve()}'\n")
+            f.write(f"file '{p.resolve()}'\n")
+    meta_file.write_text(
+        build_chapter_meta(parts, durations, chapter_titles, title, gap_ms),
+        encoding="utf-8")
+
+    cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
+           "-i", str(meta_file), "-map_metadata", "1", "-map", "0:a",
+           "-c:a", "aac", "-b:a", "96k", "-ar", "24000", "-ac", "1",
+           str(out_path)]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    finally:
+        list_file.unlink(missing_ok=True)
+        meta_file.unlink(missing_ok=True)
+    return out_path
+
+
 if __name__ == "__main__":
     print("ffmpeg:", _find_ffmpeg(), file=sys.stderr)

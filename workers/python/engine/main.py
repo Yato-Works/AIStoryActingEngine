@@ -18,9 +18,9 @@ from pathlib import Path
 
 from analyzer import OllamaStoryAnalyzer, merge_state, normalize_id
 from audio import concat_audio, probe_duration
-from director import CastingDirector, NARRATOR, RuleBasedDirector
+from director import CastingDirector, NARRATOR, RuleBasedDirector, CharacterAwareDirector
 from memory import MemoryEngine
-from models import Character, Segment, StoryState
+from models import Character, Dossier, Segment, StoryState
 from schema import clamp, normalize_emotion, normalize_segment_type, validate_performance_doc
 from tts import get_provider
 
@@ -75,6 +75,106 @@ def _slugify(name: str) -> str:
     return s or "book"
 
 
+def _persist_characters(memory: MemoryEngine, state: StoryState,
+                        new_ids: list[str], chunk_index: int) -> None:
+    """解析で得たキャラクターを永続化（新規はイベント+ログ）。"""
+    for cid in new_ids:
+        ch = state.characters[cid]
+        memory.upsert_character(ch, chunk_index)
+        memory.append_event("CHARACTER_CREATED", character=cid, name=ch.name)
+        print(f"     ✓ CHARACTER_CREATED: {ch.name} ({ch.gender}, {ch.role}, "
+              f"話し方={ch.speech_style or '?'}, 基調={ch.emotional_baseline})")
+    for ch in state.characters.values():  # 既存キャラの traits 更新も反映
+        if ch.id not in new_ids:
+            memory.upsert_character(ch, chunk_index)
+
+
+def _persist_relationships(memory: MemoryEngine, state: StoryState,
+                           chunk_index: int) -> None:
+    """関係グラフの永続化（新規・既存キャラ両方。イベントは新規エッジのみ）。"""
+    known_pairs = memory.relationship_pairs()
+    for ch in state.characters.values():
+        for dst, rel in ch.relationships.items():
+            memory.upsert_relationship(ch.id, dst, rel.label, rel.type)
+            if (ch.id, dst) not in known_pairs:
+                known_pairs.add((ch.id, dst))
+                memory.append_event("RELATIONSHIP_CREATED", src=ch.id, dst=dst,
+                                    type=rel.type, label=rel.label)
+                print(f"     ✓ RELATIONSHIP_CREATED: {ch.name} →{rel.type}→ {dst}")
+
+
+def _cast_characters(memory: MemoryEngine, state: StoryState,
+                     casting: CastingDirector, analyzer, chunk_index: int) -> None:
+    """未配役キャラに External/Internal の声を割り当てて永続化する。"""
+    newly_cast = casting.assign_voices(state, suggest=analyzer.suggest_voice)
+    for cid in newly_cast:
+        ch = state.characters[cid]
+        memory.save_voice_profile(ch)
+        memory.append_event("VOICE_ASSIGNED", character=cid,
+                            voice=ch.voice.voice_id if ch.voice else "",
+                            voice_internal=(ch.voice_internal.voice_id
+                                            if ch.voice_internal else ""))
+    if newly_cast:
+        memory.append_event("CASTING_COMPLETED", cast=newly_cast)
+        summary = ", ".join(
+            f"{state.characters[c].name}"
+            f"[{state.characters[c].voice.voice_id if state.characters[c].voice else '?'}/"
+            f"{state.characters[c].voice_internal.voice_id if state.characters[c].voice_internal else '?'}]"
+            for c in newly_cast)
+        print(f"     ✓ CASTING_COMPLETED: {summary}")
+
+
+def _direct_segments(memory: MemoryEngine, state: StoryState,
+                     director: CharacterAwareDirector, rule_director: RuleBasedDirector,
+                     segments: list[Segment], chunk_index: int) -> None:
+    """セグメントごとに演出 → 保存 → 感情記憶 → イベント → 進捗表示。"""
+    prev_speaker: str | None = None  # 直前の発話者を聞き手候補に使う
+    for seg in segments:
+        if seg.speaker == NARRATOR:
+            dossier = Dossier(character=Character(id=NARRATOR, name="ナレーター"))
+            directed = director.direct(seg, dossier)
+        else:
+            listener_id = (prev_speaker
+                           if (prev_speaker and prev_speaker != seg.speaker
+                               and seg.type == "dialogue") else None)
+            dossier = memory.get_dossier(seg.speaker, listener_id, chunk_index, state)
+            if dossier is None:
+                directed = rule_director.direct(seg, state)
+            else:
+                directed = director.direct(seg, dossier)
+        prev_speaker = seg.speaker
+        memory.save_segment(directed)
+        if seg.speaker != NARRATOR:
+            memory.update_emotional_state(
+                seg.speaker, directed.performance.emotion,
+                directed.performance.intensity, chunk_index)
+            memory.add_memory(
+                chunk_index, seg.speaker, "emotion", directed.performance.emotion,
+                directed.performance.intensity,
+                f"{state.characters[seg.speaker].name}: "
+                f"{directed.performance.emotion}({directed.performance.intensity:.1f})「{seg.text[:40]}」")
+        memory.add_memory(chunk_index, None, "text", directed.performance.emotion,
+                          directed.performance.intensity, seg.text)
+        memory.append_event("SEGMENT_DIRECTED", segment=seg.id, speaker=seg.speaker,
+                            emotion=directed.performance.emotion,
+                            voicing=directed.performance.voicing,
+                            relationship=directed.performance.relationship,
+                            carryover=directed.performance.carryover,
+                            baseline=directed.performance.baseline)
+        marks = ""
+        if directed.performance.carryover:
+            marks += " 🌫余韻"
+        if directed.performance.baseline:
+            marks += " 🎨基調"
+        if directed.performance.voicing == "internal":
+            marks += " 🧠内面声"
+        if directed.performance.relationship:
+            marks += f" 💞{directed.performance.relationship}"
+        if marks:
+            print(f"    {marks} {seg.speaker}: {seg.emotion}→{directed.performance.emotion}"
+                  f"({directed.performance.intensity:.2f}, voice={directed.performance.voice})")
+
+
 def run(novel_path: Path, provider_name: str = "edge", resume: bool = False,
         no_tts: bool = False, model: str = "qwen3:4b") -> MemoryEngine:
     text = novel_path.read_text(encoding="utf-8")
@@ -85,9 +185,9 @@ def run(novel_path: Path, provider_name: str = "edge", resume: bool = False,
 
     memory = MemoryEngine(DB_PATH, book_id, title=novel_path.stem)
     analyzer = OllamaStoryAnalyzer(model=model)
-    director = RuleBasedDirector()
+    director = CharacterAwareDirector()
+    rule_director = RuleBasedDirector()  # narrator 等のフォールバック用
     casting = CastingDirector()
-    provider = get_provider(provider_name)
 
     memory.append_event("BOOK_IMPORTED", source=str(novel_path), chars=len(text))
 
@@ -117,47 +217,15 @@ def run(novel_path: Path, provider_name: str = "edge", resume: bool = False,
         state.mood = str(sc.get("mood") or state.mood)
         memory.add_scene(chapter, gi, state.scene, state.time_of_day, state.mood)
 
-        for cid in new_ids:
-            ch = state.characters[cid]
-            memory.upsert_character(ch, gi)
-            memory.append_event("CHARACTER_CREATED", character=cid, name=ch.name)
-            print(f"     ✓ CHARACTER_CREATED: {ch.name} ({ch.gender}, {ch.role})")
-        for ch in state.characters.values():  # 既存キャラの traits 更新も反映
-            if ch.id not in new_ids:
-                memory.upsert_character(ch, gi)
-        for ch in state.characters.values():
-            for dst, label in ch.relationships.items():
-                memory.upsert_relationship(ch.id, dst, label)
+        _persist_characters(memory, state, new_ids, gi)
 
-        for cid in casting.assign_voices(state):
-            memory.save_voice_profile(state.characters[cid])
-            memory.append_event("VOICE_ASSIGNED", character=cid,
-                                voice=state.characters[cid].voice.voice_id)
+        _persist_relationships(memory, state, gi)
+
+        _cast_characters(memory, state, casting, analyzer, gi)
 
         start_no = memory.count_segments()
         segments = build_segments(analysis, state, chapter, gi, start_no)
-        for seg in segments:
-            carry = memory.get_carryover(seg.speaker, gi)
-            directed = director.direct(seg, state, carryover=carry)
-            memory.save_segment(directed)
-            if seg.speaker != NARRATOR:
-                memory.update_emotional_state(
-                    seg.speaker, directed.performance.emotion,
-                    directed.performance.intensity, gi)
-                memory.add_memory(
-                    gi, seg.speaker, "emotion", directed.performance.emotion,
-                    directed.performance.intensity,
-                    f"{state.characters[seg.speaker].name}: "
-                    f"{directed.performance.emotion}({directed.performance.intensity:.1f})「{seg.text[:40]}」")
-            memory.add_memory(gi, None, "text", directed.performance.emotion,
-                              directed.performance.intensity, seg.text)
-            memory.append_event("SEGMENT_DIRECTED", segment=seg.id, speaker=seg.speaker,
-                                emotion=directed.performance.emotion,
-                                carryover=directed.performance.carryover)
-            mark = " 🌫余韻適用" if directed.performance.carryover else ""
-            if mark:
-                print(f"     🌫 {seg.speaker}: {seg.emotion}→{directed.performance.emotion}"
-                      f"({directed.performance.intensity:.2f}) {mark}")
+        _direct_segments(memory, state, director, rule_director, segments, gi)
 
         memory.mark_chunk_analyzed(gi, chapter)
         memory.append_event("ANALYZE_COMPLETED", chunk_index=gi, chapter=chapter,
@@ -186,12 +254,13 @@ def produce(memory: MemoryEngine, provider_name: str = "edge", resume: bool = Fa
     done_audio = memory.audio_done() if resume else set()
     if not no_tts:
         todo = [s for s in segments if s.id not in done_audio and s.performance]
+        ext = getattr(provider, "ext", ".mp3")
         for seg in todo:
-            mp3 = audio_dir / f"{seg.id}.mp3"
-            provider.synthesize(seg.text, seg.performance, mp3)  # type: ignore[arg-type]
-            memory.set_audio(seg.id, str(mp3))
+            clip = audio_dir / f"{seg.id}{ext}"
+            provider.synthesize(seg.text, seg.performance, clip)  # type: ignore[arg-type]
+            memory.set_audio(seg.id, str(clip))
             memory.append_event("AUDIO_GENERATED", segment=seg.id)
-        print(f"  🎙 TTS: {len(todo)} セグメント新規合成（DB記録済み {len(done_audio)}）")
+        print(f"  🎙 TTS({provider.name}): {len(todo)} セグメント新規合成（DB記録済み {len(done_audio)}）")
 
     parts = memory.audio_paths()
     if parts:
@@ -222,9 +291,15 @@ def export_contracts(memory: MemoryEngine, out_dir: Path) -> int:
     (out_dir / "performance.json").write_text(
         json.dumps(perf_doc, ensure_ascii=False, indent=2), encoding="utf-8")
     chars_doc = [
-        {"id": c.id, "name": c.name, "gender": c.gender, "role": c.role,
-         "traits": c.traits, "relationships": c.relationships,
+        {"id": c.id, "name": c.name, "gender": c.gender, "age": c.age,
+         "role": c.role, "traits": c.traits,
+         "personality": c.personality, "speech_style": c.speech_style,
+         "emotional_baseline": c.emotional_baseline,
+         "emotional_range": c.emotional_range,
+         "relationships": {k: v.model_dump() for k, v in c.relationships.items()},
          "voice": c.voice.model_dump() if c.voice else None,
+         "voice_internal": (c.voice_internal.model_dump()
+                            if c.voice_internal else None),
          "last_emotion": c.last_emotion, "last_intensity": c.last_intensity}
         for c in state.characters.values()]
     (out_dir / "characters.json").write_text(
@@ -252,9 +327,10 @@ def show_stats(memory: MemoryEngine) -> None:
 
 def main() -> None:
     _setup_stdio()
-    ap = argparse.ArgumentParser(description="AIStoryActingEngine Phase 1")
+    ap = argparse.ArgumentParser(description="AIStoryActingEngine Phase 2")
     ap.add_argument("novel", nargs="?", type=Path, help="小説テキストファイル")
-    ap.add_argument("--provider", default="edge", choices=["edge", "aivis"])
+    ap.add_argument("--provider", default="edge", choices=["edge", "aivis", "sbv2"],
+                    help="sbv2 は Style-Bert-VITS2 サーバ (localhost:5000) 必須")
     ap.add_argument("--model", default="qwen3:4b")
     ap.add_argument("--no-tts", action="store_true")
     ap.add_argument("--resume", action="store_true", help="DB の進捗から再開")
@@ -263,13 +339,9 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.search:
-        from memory import _fts_query
+        from memory import _fts_query  # noqa: F401  (後方互換のために残す)
 
-        rows = MemoryEngine(DB_PATH, "demo").conn.execute(
-            """SELECT book_id, chunk_index, character_id, kind,
-                      snippet(memories_fts, 0, '<<', '>>', '…', 8) AS hit
-               FROM memories_fts WHERE memories_fts MATCH ? ORDER BY rank LIMIT 10""",
-            (_fts_query(args.search),)).fetchall()
+        rows = MemoryEngine(DB_PATH, "demo").search(args.search, with_book=True)
         print(f"🔎 FTS5 検索: '{args.search}' → {len(rows)} 件")
         for r in rows:
             print(f"  [{r['book_id']} ch{r['chunk_index']} {r['kind']}] {r['hit']}")

@@ -114,7 +114,16 @@ Input → Speaker Detection → Character Memory → Scene State
       → Emotion Analysis → Performance Planning → Voice Selection
 ```
 
-出力は `performance.json`（中核データ構造）：
+Phase 2 以降の Director への入力は **Dossier 1 つ**（Memory Engine が集約）:
+
+```
+Dossier = 人物(personality/speech_style/感情基調/起伏)
+        + 聞き手との型付き有向関係(loves/friend/rival/...)
+        + 感情の余韻(前チャンク ×0.55^chunk_gap)
+        + 直近の感情記憶 + 場面
+```
+
+出力は `performance.json`（中核データ構造、Phase 2 契約 v2）：
 
 ```json
 {
@@ -124,14 +133,25 @@ Input → Speaker Detection → Character Memory → Scene State
   "emotion": "sarcastic",
   "intensity": 0.42,
   "pace": 0.91,
-  "pitch": -0.08
+  "pitch": -0.08,
+  "voicing": "internal",
+  "style": "Neutral",
+  "carryover": false,
+  "baseline": false,
+  "relationship": "loves"
 }
 ```
 
+### External / Internal デュアルボイス
+
+キャラクターは外向きの声（`voice`）と内面の声（`voice_internal`、低く・遅い）を 1 組で持つ。
+`inner_monologue` は Internal 声で発話され、関係タイプと話し方（speech_style）で
+dialogue が相手ごとに演じ分けられる。詳細は ADR-0002。
+
 ### Voice Profile と Performance の分離
 
-- **Voice Profile**（キャラ固有・不変）：base voice / gender / age / pitch / timbre
-- **Performance**（セグメント毎・可変）：emotion / intensity / pace / pitch_delta / volume / speaking_style
+- **Voice Profile**（キャラ固有・不変）：base voice / gender / age / pitch / timbre / tts_voice / sbv2_model_name / sbv2_style
+- **Performance**（セグメント毎・可変）：emotion / intensity / pace / pitch_delta / volume / voicing / style
 
 これにより「同じキャラでも怒る・泣く・小声・心の声・叫ぶ」を表現でき、
 将来的な「普段は女性声2、心情では男性声3」のような高度なキャスティングに繋がる。
@@ -163,7 +183,8 @@ IMPORT_BOOK → OCR → ANALYZE → CAST → DIRECT → TTS → MIX → EXPORT
 
 ### Event Log
 
-`BOOK_IMPORTED / OCR_COMPLETED / CHARACTER_CREATED / VOICE_ASSIGNED / SEGMENT_DIRECTED / AUDIO_GENERATED`
+`BOOK_IMPORTED / CHARACTER_CREATED / RELATIONSHIP_CREATED / VOICE_ASSIGNED /
+CASTING_COMPLETED / SEGMENT_DIRECTED / AUDIO_GENERATED`
 を Single Source of Truth にし、PC再起動からでもジョブ再開を可能にする。
 
 ### Cloud Backend
@@ -188,7 +209,7 @@ IMPORT_BOOK → OCR → ANALYZE → CAST → DIRECT → TTS → MIX → EXPORT
 |---|---|
 | 0 | PoC（Python）：TXT → LLM → Character → Emotion → Casting → Direction → TTS → WAV |
 | 1 | Story Engine：Character / Scene / Relationship / Memory をSQLiteへ |
-| 2 | Voice Director 本格化 |
+| 2 | Voice Director 本格化（Character Intelligence + デュアルボイス + SBV2） ✅ |
 | 3 | Desktop（Qt/QML + C++） |
 | 4 | Local TTS 統合（GPU / VRAM管理） |
 | 5 | PDF / Image（OCR） |

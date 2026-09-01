@@ -32,3 +32,16 @@ workers/python/engine/run.done
 workers/python/engine/poc_*.log
 workers/python/engine/poc_err.txt
 workers/python/engine/gap_*.wav
+
+# Phase 2: バックグラウンド実行ラッパーの成果物
+workers/python/engine/clone.done
+workers/python/engine/clone.log
+workers/python/engine/_sbv2_setup.log
+workers/python/engine/_sbv2_setup.done
+workers/python/engine/_sbv2_server.log
+workers/python/engine/_sbv2_server.pid
+workers/python/engine/rel_debug.*
+
+# 外部リポジトリ（SBV2）とその venv
+third_party/
+**/.venv-sbv2/

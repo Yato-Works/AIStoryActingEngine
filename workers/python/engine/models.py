@@ -2,6 +2,12 @@
 
 将来 C++ Core に移植するときの構造の叩き台。
 Voice Profile（キャラ固有・不変）と Performance（セグメント毎・可変）を厳密に分離する。
+
+Phase 2: Character Intelligence
+- Character に personality / speech_style / emotional_baseline / emotional_range を追加
+- Relationship を型付き有向グラフ（loves / friend / rival ...）に拡張
+- 同一キャラに External（外向き）と Internal（内面）の 2 声を持たせる
+- Dossier: Director への唯一の入力（人物+関係+場+記憶を 1 オブジェクトに）
 """
 
 from __future__ import annotations
@@ -14,10 +20,15 @@ Gender = Literal["male", "female", "unknown"]
 Age = Literal["child", "young", "adult", "elder"]
 SegmentType = Literal["narration", "dialogue", "inner_monologue"]
 Mode = Literal["narration", "dialogue", "internal"]
+Voicing = Literal["external", "internal", "narrator"]
 
 
 class VoiceProfile(BaseModel):
-    """キャラクター固有の声の素（不変）。"""
+    """キャラクター固有の声の素（不変）。
+
+    tts_voice は edge-tts 等のボイス名、sbv2_style は Style-Bert-VITS2 の
+    style（=モデル内スピーカー）名。どちらかを使うプロバイダ側で解釈する。
+    """
 
     voice_id: str
     label: str = ""
@@ -26,6 +37,16 @@ class VoiceProfile(BaseModel):
     base_pitch: float = 0.0   # -1.0 .. 1.0
     base_pace: float = 1.0    # 0.5 .. 1.5
     tts_voice: str = ""       # TTSプロバイダ固有のボイス名
+    sbv2_model_name: str = "jvnv-M1-jp"  # Style-Bert-VITS2 の model_assets 内ディレクトリ名
+    sbv2_model_id: int = 0    # model_name 未指定時のフォールバック
+    sbv2_style: str = "Neutral"
+
+
+class Relationship(BaseModel):
+    """キャラクター src → dst の有向関係。"""
+
+    type: str = "other"       # 契約語彙は schema.RELATIONSHIP_TYPES
+    label: str = ""           # 自由テキスト（「告白の相手」等）
 
 
 class Character(BaseModel):
@@ -35,12 +56,30 @@ class Character(BaseModel):
     age: Age = "adult"
     role: str = ""            # main / side / ...
     traits: list[str] = Field(default_factory=list)
-    relationships: dict[str, str] = Field(default_factory=dict)
-    voice: Optional[VoiceProfile] = None
+    # --- Phase 2: Character Intelligence ---
+    personality: list[str] = Field(default_factory=list)   # ["calm", "awkward"]
+    speech_style: str = ""                                 # polite / casual / rough / formal
+    emotional_baseline: str = "neutral"                    # 普段の感情の基調
+    emotional_range: float = 0.5                           # 0.0(静) .. 1.0(激しい起伏)
+    relationships: dict[str, Relationship] = Field(default_factory=dict)
+    voice: Optional[VoiceProfile] = None                   # External（外向き）
+    voice_internal: Optional[VoiceProfile] = None          # Internal（内面）
     # 直近の感情状態（Memory Engine から供給され、プロンプトと演技に使われる）
     last_emotion: Optional[str] = None
     last_intensity: Optional[float] = None
     last_chunk: Optional[int] = None
+
+
+class Dossier(BaseModel):
+    """Voice Director への唯一の入力。Memory Engine が組み立てる「身辺調査書」。"""
+
+    character: Character
+    listener: Optional[Character] = None          # このセグメントの聞き手（不明なら None）
+    relationship: Optional[Relationship] = None   # speaker → listener の関係
+    carryover: Optional[tuple[str, float]] = None # 直近チャンクの感情残響
+    recent: list[str] = Field(default_factory=list)  # 直近の感情記憶（新しい順）
+    scene: str = ""
+    mood: str = ""
 
 
 class StoryState(BaseModel):
@@ -61,9 +100,16 @@ class StoryState(BaseModel):
         if self.mood:
             lines.append(f"- 雰囲気: {self.mood}")
         for ch in self.characters.values():
-            rel = ", ".join(f"{k}: {v}" for k, v in ch.relationships.items()) or "なし"
+            rel = ", ".join(
+                f"{k}({v.type}: {v.label})" for k, v in ch.relationships.items()
+            ) or "なし"
             traits = ", ".join(ch.traits) or "なし"
-            line = f"- {ch.name}(id={ch.id}, gender={ch.gender}, traits={traits}, 関係={rel})"
+            pers = ", ".join(ch.personality) or "なし"
+            line = (f"- {ch.name}(id={ch.id}, gender={ch.gender}, age={ch.age}, "
+                    f"role={ch.role}, 性格={pers}, traits={traits}, "
+                    f"話し方={ch.speech_style or 'unknown'}, 関係={rel})")
+            if ch.emotional_baseline != "neutral":
+                line += f" ※感情の基調: {ch.emotional_baseline}(起伏{ch.emotional_range:.1f})"
             if ch.last_emotion and ch.last_emotion != "neutral":
                 line += f" ※直近の感情: {ch.last_emotion}(強さ{ch.last_intensity:.1f}, チャンク{ch.last_chunk})"
             lines.append(line)
@@ -86,14 +132,18 @@ class Segment(BaseModel):
 class Performance(BaseModel):
     """Voice Director が生成する演技指示。TTS への入力契約。"""
 
-    voice: str                       # voice_id
+    voice: str                       # voice_id（voicing に応じて external/internal を解決済み）
     mode: Mode
     emotion: str
     intensity: float                 # 0.0 .. 1.0
     pace: float                      # 0.5 .. 1.5
     pitch: float                     # -1.0 .. 1.0
     volume: float = 1.0              # 0.5 .. 1.5
+    voicing: Voicing = "external"    # external(外向き) / internal(内面) / narrator
+    style: str = ""                  # TTS 固有のスタイル名（SBV2 の style 等）
     carryover: bool = False          # 前チャンクの感情の余韻を適用したか
+    baseline: bool = False           # 感情の基調（emotional_baseline）を適用したか
+    relationship: str = ""           # 演出に使った関係タイプ（loves 等）
 
 
 class DirectedSegment(Segment):

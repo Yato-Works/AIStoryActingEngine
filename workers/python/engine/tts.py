@@ -85,17 +85,72 @@ class AivisSpeechProvider:
         out_path.write_bytes(wav)
 
 
-# voice_id → edge-tts ボイス名（poC と同じマップ）
+# voice_id → edge-tts ボイス名（PoC と同じマップ）
+# internal 版（voice_XXi / voice_narratori）は同じ音声名を指し、
+# 低さ・遅さは VoiceProfile.base_pitch/base_pace と Performance 側で調整済み。
 _VOICE_NAME_MAP = {
     "voice_01": "ja-JP-KeitaNeural",
     "voice_02": "ja-JP-NanamiNeural",
     "voice_03": "ja-JP-NanamiNeural",
     "voice_04": "ja-JP-KeitaNeural",
     "voice_narrator": "ja-JP-KeitaNeural",
+    "voice_01i": "ja-JP-KeitaNeural",
+    "voice_02i": "ja-JP-NanamiNeural",
+    "voice_03i": "ja-JP-NanamiNeural",
+    "voice_04i": "ja-JP-KeitaNeural",
+    "voice_narratori": "ja-JP-KeitaNeural",
 }
 
 
-def get_provider(name: str) -> ITTSProvider:
+class StyleBertVITS2Provider:
+    """Style-Bert-VITS2 のローカルサーバ (http://127.0.0.1:5000) を使う実装。
+
+    ADR-0001 に従い、モデル自体はエンジン外の別プロセス（別 venv）で動かし、
+    ここでは HTTP クライアントとして消費するだけ。
+    ボイスの素は VoiceProfile.sbv2_model_id / sbv2_style が担う。
+    """
+
+    name = "sbv2"
+    ext = ".wav"
+
+    def __init__(self, host: str = "http://127.0.0.1:5000") -> None:
+        self.base_url = host.rstrip("/")
+
+    def synthesize(self, text: str, perf: Performance, out_path: Path) -> None:
+        import httpx
+
+        from voices import all_profiles
+        profiles = {p.voice_id: p for p in all_profiles()}
+        profile = profiles.get(perf.voice)
+        model_name = profile.sbv2_model_name if profile else "jvnv-M1-jp"
+        style = perf.style or (profile.sbv2_style if profile else "Neutral")
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        params = {
+            "text": text,
+            "model_name": model_name,   # model_id より優先される
+            "speaker_id": 0,
+            "style": style,
+            "style_weight": round(min(1.0, 0.4 + 0.8 * perf.intensity), 2),
+            "sdp_ratio": 0.2,
+            "noise": 0.6,
+            "noise_w": 0.8,
+            # edge-tts の rate(+%) とは逆向き: SBV2 の length は大きいほど遅い
+            "length": round(max(0.5, min(2.0, 1.0 / max(0.1, perf.pace))), 3),
+            "auto_split": "true",
+            "split_interval": 0.5,
+            "language": "JP",
+        }
+        resp = httpx.post(f"{self.base_url}/voice", params=params, timeout=300.0)
+        resp.raise_for_status()
+        out_path.write_bytes(resp.content)
+
+
+def get_provider(name: str, host: str | None = None) -> ITTSProvider:
     if name == "aivis":
         return AivisSpeechProvider()
+    if name == "sbv2":
+        import os
+
+        return StyleBertVITS2Provider(host or os.environ.get("SBV2_HOST", "http://127.0.0.1:5000"))
     return EdgeTTSProvider()

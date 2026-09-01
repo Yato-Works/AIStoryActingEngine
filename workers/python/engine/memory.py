@@ -22,7 +22,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from models import Character, DirectedSegment, StoryState, VoiceProfile
+from models import Character, DirectedSegment, Dossier, Relationship, StoryState, VoiceProfile
+import schema as contracts
 
 
 def _spaced(text: str) -> str:
@@ -52,9 +53,11 @@ CREATE TABLE IF NOT EXISTS characters(
   book_id TEXT, id TEXT, name TEXT, gender TEXT, age TEXT, role TEXT,
   traits TEXT, voice_json TEXT,
   first_chunk INTEGER, last_emotion TEXT, last_intensity REAL, last_chunk INTEGER,
+  personality TEXT, speech_style TEXT, baseline TEXT, erange REAL,
+  voice_internal_json TEXT,
   PRIMARY KEY(book_id, id));
 CREATE TABLE IF NOT EXISTS relationships(
-  book_id TEXT, src_id TEXT, dst_id TEXT, label TEXT,
+  book_id TEXT, src_id TEXT, dst_id TEXT, label TEXT, type TEXT,
   PRIMARY KEY(book_id, src_id, dst_id));
 CREATE TABLE IF NOT EXISTS scenes(
   book_id TEXT, chapter INTEGER, chunk_index INTEGER,
@@ -88,11 +91,29 @@ def _now() -> str:
 class MemoryEngine:
     """SQLite で物語状態を管理する Memory Engine。"""
 
+    # Phase 1 DB → Phase 2 の列追加マイグレーション
+    _MIGRATIONS = [
+        ("characters", "personality", "TEXT"),
+        ("characters", "speech_style", "TEXT"),
+        ("characters", "baseline", "TEXT"),
+        ("characters", "erange", "REAL"),
+        ("characters", "voice_internal_json", "TEXT"),
+        ("relationships", "type", "TEXT"),
+    ]
+
+    def _migrate(self) -> None:
+        for table, col, typ in self._MIGRATIONS:
+            cols = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+        self.conn.commit()
+
     def __init__(self, db_path: Path, book_id: str, title: str = "") -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.execute(
             "INSERT OR IGNORE INTO books(id, title, created_at) VALUES(?,?,?)",
             (book_id, title or book_id, _now()),
@@ -129,15 +150,23 @@ class MemoryEngine:
         self.conn.execute(
             """INSERT INTO characters(book_id, id, name, gender, age, role, traits,
                                       voice_json, first_chunk, last_emotion,
-                                      last_intensity, last_chunk)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                                      last_intensity, last_chunk,
+                                      personality, speech_style, baseline, erange,
+                                      voice_internal_json)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(book_id, id) DO UPDATE SET
                  name=excluded.name, gender=excluded.gender, age=excluded.age,
-                 role=excluded.role, traits=excluded.traits""",
+                 role=excluded.role, traits=excluded.traits,
+                 personality=excluded.personality, speech_style=excluded.speech_style,
+                 baseline=excluded.baseline, erange=excluded.erange,
+                 voice_internal_json=excluded.voice_internal_json""",
             (self.book_id, ch.id, ch.name, ch.gender, ch.age, ch.role,
              json.dumps(ch.traits, ensure_ascii=False),
              ch.voice.model_dump_json() if ch.voice else None,
-             chunk_index, ch.last_emotion, ch.last_intensity, ch.last_chunk),
+             chunk_index, ch.last_emotion, ch.last_intensity, ch.last_chunk,
+             json.dumps(ch.personality, ensure_ascii=False), ch.speech_style,
+             ch.emotional_baseline, ch.emotional_range,
+             ch.voice_internal.model_dump_json() if ch.voice_internal else None),
         )
         self.conn.commit()
 
@@ -151,21 +180,111 @@ class MemoryEngine:
         self.conn.commit()
 
     def save_voice_profile(self, ch: Character) -> None:
-        if ch.voice is None:
+        """External / Internal 両方の Voice Profile を保存する。"""
+        sets: list[str] = []
+        params: list[object] = []
+        if ch.voice is not None:
+            sets.append("voice_json=?")
+            params.append(ch.voice.model_dump_json())
+        if ch.voice_internal is not None:
+            sets.append("voice_internal_json=?")
+            params.append(ch.voice_internal.model_dump_json())
+        if not sets:
             return
+        params += [self.book_id, ch.id]
         self.conn.execute(
-            "UPDATE characters SET voice_json=? WHERE book_id=? AND id=?",
-            (ch.voice.model_dump_json(), self.book_id, ch.id),
+            f"UPDATE characters SET {', '.join(sets)} WHERE book_id=? AND id=?",
+            params,
         )
         self.conn.commit()
 
-    def upsert_relationship(self, src_id: str, dst_id: str, label: str) -> None:
+    def upsert_relationship(self, src_id: str, dst_id: str, label: str,
+                            type_: str = "other") -> None:
+        """有向関係を保存。対称な型は逆向きも自動生成する。"""
+        if not src_id or not dst_id or src_id == dst_id:
+            return
         self.conn.execute(
-            """INSERT INTO relationships(book_id, src_id, dst_id, label) VALUES(?,?,?,?)
-               ON CONFLICT(book_id, src_id, dst_id) DO UPDATE SET label=excluded.label""",
-            (self.book_id, src_id, dst_id, label),
+            """INSERT INTO relationships(book_id, src_id, dst_id, label, type) VALUES(?,?,?,?,?)
+               ON CONFLICT(book_id, src_id, dst_id) DO UPDATE SET
+                 label=excluded.label, type=excluded.type""",
+            (self.book_id, src_id, dst_id, label, type_),
         )
+        if type_ in contracts.SYMMETRIC_RELATIONSHIPS:
+            # 逆向きは「無い場合だけ」自動生成（既存の有向エッジは上書きしない）
+            self.conn.execute(
+                """INSERT INTO relationships(book_id, src_id, dst_id, label, type) VALUES(?,?,?,?,?)
+                   ON CONFLICT(book_id, src_id, dst_id) DO NOTHING""",
+                (self.book_id, dst_id, src_id, label, type_),
+            )
         self.conn.commit()
+
+    def relationship_pairs(self) -> set[tuple[str, str]]:
+        """既存の有向エッジ (src, dst) の集合（イベント重複排除用）。"""
+        rows = self.conn.execute(
+            "SELECT src_id, dst_id FROM relationships WHERE book_id=?",
+            (self.book_id,),
+        ).fetchall()
+        return {(r["src_id"], r["dst_id"]) for r in rows}
+
+    def get_relationship(self, src_id: str, dst_id: str) -> Relationship | None:
+        """src → dst の有向関係を返す。
+
+        直接のエッジが無い場合は逆向きを探し、非対称な型は
+        演出用に反転不能な意味へ落として返す（loves の逆は other）。
+        """
+        row = self.conn.execute(
+            """SELECT type, label FROM relationships
+               WHERE book_id=? AND src_id=? AND dst_id=?""",
+            (self.book_id, src_id, dst_id),
+        ).fetchone()
+        if row:
+            return Relationship(type=row["type"] or "other", label=row["label"] or "")
+        row = self.conn.execute(
+            """SELECT type, label FROM relationships
+               WHERE book_id=? AND src_id=? AND dst_id=?""",
+            (self.book_id, dst_id, src_id),
+        ).fetchone()
+        if row:
+            t = row["type"] or "other"
+            if t in contracts.SYMMETRIC_RELATIONSHIPS or t == "other":
+                return Relationship(type=t, label=row["label"] or "")
+            # 非対称（loves / respects / trusts / despises / owes）の逆向き
+            return Relationship(type="other", label=f"相手からの片方向: {t}")
+        return None
+
+    def get_dossier(self, char_id: str, listener_id: str | None,
+                    chunk_index: int, state: StoryState) -> Dossier | None:
+        """Voice Director へ渡す Dossier を組み立てる（Memory Engine の集約点）。
+
+        人物 + 聞き手との関係 + 感情の余韻 + 直近の感情記憶 + 場面 → 1 オブジェクト。
+        """
+        character = state.characters.get(char_id)
+        if character is None:
+            return None
+        listener = state.characters.get(listener_id) if listener_id else None
+        relationship = (
+            self.get_relationship(char_id, listener_id) if listener_id else None
+        )
+        carryover = self.get_carryover(char_id, chunk_index)
+        rows = self.conn.execute(
+            """SELECT emotion, intensity, content FROM memories
+               WHERE book_id=? AND character_id=? AND kind='emotion'
+               ORDER BY id DESC LIMIT 3""",
+            (self.book_id, char_id),
+        ).fetchall()
+        recent = [
+            f"{r['emotion']}({r['intensity']:.1f}): {(r['content'] or '')[:40]}"
+            for r in rows
+        ]
+        return Dossier(
+            character=character,
+            listener=listener,
+            relationship=relationship,
+            carryover=carryover,
+            recent=recent,
+            scene=state.scene,
+            mood=state.mood,
+        )
 
     def load_state(self) -> StoryState:
         """DB から StoryState を再構築する（resume の土台）。"""
@@ -178,22 +297,31 @@ class MemoryEngine:
             voice = None
             if row["voice_json"]:
                 voice = VoiceProfile.model_validate_json(row["voice_json"])
+            voice_internal = None
+            if row["voice_internal_json"]:
+                voice_internal = VoiceProfile.model_validate_json(row["voice_internal_json"])
             state.characters[row["id"]] = Character(
                 id=row["id"], name=row["name"], gender=row["gender"] or "unknown",
                 age=row["age"] or "adult", role=row["role"] or "",
                 traits=json.loads(row["traits"] or "[]"),
+                personality=json.loads(row["personality"] or "[]"),
+                speech_style=row["speech_style"] or "",
+                emotional_baseline=row["baseline"] or "neutral",
+                emotional_range=(row["erange"] if row["erange"] is not None else 0.5),
                 voice=voice,
+                voice_internal=voice_internal,
                 last_emotion=row["last_emotion"],
                 last_intensity=row["last_intensity"],
                 last_chunk=row["last_chunk"],
             )
         rels = self.conn.execute(
-            "SELECT src_id, dst_id, label FROM relationships WHERE book_id=?",
+            "SELECT src_id, dst_id, type, label FROM relationships WHERE book_id=?",
             (self.book_id,),
         ).fetchall()
         for rel in rels:
             if rel["src_id"] in state.characters:
-                state.characters[rel["src_id"]].relationships[rel["dst_id"]] = rel["label"]
+                state.characters[rel["src_id"]].relationships[rel["dst_id"]] = Relationship(
+                    type=rel["type"] or "other", label=rel["label"] or "")
         scene = self.conn.execute(
             """SELECT description, time_of_day, mood FROM scenes
                WHERE book_id=? ORDER BY rowid DESC LIMIT 1""",
@@ -273,15 +401,26 @@ class MemoryEngine:
         )
         self.conn.commit()
 
-    def search(self, query: str, limit: int = 10) -> list[sqlite3.Row]:
-        """FTS5 全文検索（memories_fts に対して）。日本語はフレーズ検索に変換。"""
+    def search(self, query: str, limit: int = 10,
+               with_book: bool = False) -> list[sqlite3.Row]:
+        """FTS5 全文検索（memories_fts に対して）。日本語はフレーズ検索に変換。
+
+        with_book=True なら書籍を横断して検索し、結果に book_id を含める
+        （CLI の --search デモ用）。デフォルトは自書籍のみ。
+        """
+        cols = "book_id, " if with_book else ""
+        filt = "" if with_book else "AND book_id=?"
+        params: list[object] = [_fts_query(query)]
+        if not with_book:
+            params.append(self.book_id)
+        params.append(limit)
         return self.conn.execute(
-            """SELECT chunk_index, character_id, kind,
-                      snippet(memories_fts, 0, '<<', '>>', '…', 8) AS hit
-               FROM memories_fts
-               WHERE memories_fts MATCH ? AND book_id=?
-               ORDER BY rank LIMIT ?""",
-            (_fts_query(query), self.book_id, limit),
+            f"""SELECT {cols}chunk_index, character_id, kind,
+                       snippet(memories_fts, 0, '<<', '>>', '…', 8) AS hit
+                FROM memories_fts
+                WHERE memories_fts MATCH ? {filt}
+                ORDER BY rank LIMIT ?""",
+            params,
         ).fetchall()
 
     def close(self) -> None:

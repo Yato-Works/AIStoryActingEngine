@@ -4,7 +4,9 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).parent
-args = [sys.executable, str(HERE / "main.py")] + sys.argv[1:]
+VENV_PY = HERE.parent / ".venv" / "Scripts" / "python.exe"
+args = [str(VENV_PY if VENV_PY.exists() else sys.executable),
+        str(HERE / "main.py")] + sys.argv[1:]
 r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
                    errors="replace", cwd=HERE)
 (HERE / "run.log").write_text(r.stdout or "", encoding="utf-8")

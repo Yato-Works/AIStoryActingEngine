@@ -34,7 +34,8 @@ def concat_audio(files: list[Path], out_path: Path, gap_ms: int = 250) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     list_file = out_path.with_suffix(".txt")
-    gap = Path(f"gap_{gap_ms}.wav")
+    # 無音ギャップは出力先ディレクトリに隠しファイルとして置く（CWD を汚さない）
+    gap = out_path.parent / f".gap_{gap_ms}.wav"
     # 無音ファイルを生成（必要な場合のみ）
     ffmpeg = _find_ffmpeg()
     if gap_ms > 0 and not gap.exists():

@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# PoC output
+workers/python/poc/output/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
+.idea/
+*.swp
+
+# Build (future C++/Qt)
+build/
+CMakeLists.txt.user
+*.user
+
+# Node (future cloud)
+node_modules/

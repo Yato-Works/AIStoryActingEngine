@@ -46,3 +46,8 @@ workers/python/engine/rel_debug.*
 # 外部リポジトリ（SBV2）とその venv
 third_party/
 **/.venv-sbv2/
+
+aqtinstall.log
+workers/python/engine/aiae_selftest.txt
+workers/python/engine/selftest_err.log
+workers/python/engine/worker_dbg.err

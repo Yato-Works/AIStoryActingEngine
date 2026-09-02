@@ -14,6 +14,7 @@ from director import plan_prosody, apply_voice_state, normalize_intent, emotion_
 from audio import plan_speech_segments, plan_breaths, render_breath, crossfade_concat
 from sbv2_adapter import Sbv2PerformanceSynthesizer
 from qa import PerformanceEvaluator, AutoReperformer
+from llm_judge import evaluate_judge
 from schema import clamp
 from scene_context import tone_energy_scale
 
@@ -64,12 +65,30 @@ def compose_with_breaths(wavs, breaths, out_path, parts_dir):
     return out_path
 
 
+def _acoustic_metrics(wav_path):
+    """合成 wav -> Judge へ渡す最小の音響特徴（失敗時は None）。"""
+    try:
+        from qa import analyze_audio
+        feats = analyze_audio(wav_path)
+    except Exception:
+        return None
+    return {
+        "peak": feats.get("peak", 0.0),
+        "silence_ratio": feats.get("silence_ratio", 0.0),
+        "zcr": feats.get("zcr", 0.0),
+        "clipping": float(feats.get("peak", 0.0) or 0.0) >= 0.99,
+    }
+
+
 def render_segment(seg, profile, state, provider, out_path, seed=42,
                    qa_threshold=75.0, attempts=2, judge=None, judge_threshold=0.7,
-                   tone=None):
+                   tone=None, prev_emotion=None):
     """1 セグメントを HVE で演じる -> composed wav + plan。QA gate + auto re-perform。
 
     tone は Scene Override (3.5Q)（comedy 等で過剰演技を抑制）。
+    prev_emotion は Performance Judge (3.5R) の continuity 審査用。
+    judge を渡すと 3.5R の Decision（KEEP / RE-PERFORM）が働く:
+    再演技のスコアが改善したときだけ採用し、悪化したら元の演技を KEEP する。
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +100,10 @@ def render_segment(seg, profile, state, provider, out_path, seed=42,
     composed = compose_with_breaths(wavs, breaths, out_path, parts_dir)
     report = None
     if judge is not None:
-        report = judge.evaluate(plan, state=state, intent=plan["intent"], emotion=seg.emotion)
+        report = evaluate_judge(judge, plan, state=state, intent=plan["intent"],
+                                emotion=seg.emotion, intensity=seg.intensity,
+                                tone=tone, prev_emotion=prev_emotion,
+                                audio_metrics=_acoustic_metrics(composed))
         plan["judge"] = report.model_dump()
     need_retry = (PerformanceEvaluator().evaluate_plan(plan)["HumanLikenessScore"] < qa_threshold
                   or (report is not None and report.human_ness < judge_threshold))
@@ -92,11 +114,31 @@ def render_segment(seg, profile, state, provider, out_path, seed=42,
         if report is not None and report.diagnoses != ["ok"]:
             from llm_judge import diagnose_to_tweak, apply_tweak
             new = apply_tweak(new, diagnose_to_tweak(report.diagnoses), seed=seed + 1)
+        # 再演技は別ファイルへ合成してから比較する（元の演技を壊さない）
+        retry_path = out_path.with_name(out_path.stem + ".retry.wav")
         wavs2 = syn.synthesize_segments(segments, new, profile, parts_dir)
-        composed = compose_with_breaths(wavs2, breaths, out_path, parts_dir)
-        plan = new
-        if report is not None:
-            plan["judge"] = report.model_dump()
-        if report is not None and report.diagnoses != ["ok"]:
-            plan["tweaked"] = True
+        compose_with_breaths(wavs2, breaths, retry_path, parts_dir)
+        new_report = None
+        if judge is not None:
+            new_report = evaluate_judge(judge, new, state=state,
+                                        intent=new.get("intent", plan["intent"]),
+                                        emotion=seg.emotion, intensity=seg.intensity,
+                                        tone=tone, prev_emotion=prev_emotion,
+                                        audio_metrics=_acoustic_metrics(retry_path))
+            new["judge"] = new_report.model_dump()
+        # ---- Decision (3.5R): RE-PERFORM が改善したときだけ採用 ----
+        better = (report is None or new_report is None
+                  or new_report.human_ness >= report.human_ness)
+        if better:
+            retry_path.replace(out_path)
+            composed = out_path
+            plan = new
+            if new_report is not None and new_report.diagnoses != ["ok"]:
+                plan["tweaked"] = True
+        else:
+            retry_path.unlink(missing_ok=True)  # KEEP: 元の演技を維持
+            if report is not None:
+                kept = report.model_dump()
+                kept["decision"] = "keep"
+                plan["judge"] = kept
     return composed, plan

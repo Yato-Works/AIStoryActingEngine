@@ -58,7 +58,7 @@ Phase 1 からの進化（詳細は `docs/adr/0002-character-intelligence-and-du
 ```bash
 cd workers/python
 pip install -r requirements.txt -r requirements-dev.txt
-pytest                 # repo ルートの pytest.ini が tests/ を解決（104 tests）
+pytest                 # repo ルートの pytest.ini が tests/ を解決（122 tests）
 # または従来のスクリプト実行も可能:
 python engine/tests/test_phase2.py   # 全 39 項目
 ```
@@ -117,7 +117,21 @@ echo '{"jsonrpc":"2.0","id":1,"method":"ping"}' | python worker.py
     （キャラの感情 ≠ 必ず大声）
   - VoiceState は `voice_states` テーブルに永続化（resume でも状態が生きる）され、
     `VOICE_STATE_CHANGED` / `SCENE_EVENT` として Event Log に流れる（SSOT）
-- **Performance Judge**（3.5N）は単体モジュールとして提供。実 LLM 化は次フェーズ（3.5R）
+- **Performance Judge**（3.5N/R）: 「音が綺麗か」ではなく「**演技として正しいか**」を審査する。
+
+  ```
+  Story Context + Scene Context + VoiceState + Performance Plan
+  + Audio Metrics + Previous Segment
+        ↓ Judge（ContextJudge=決定論 / OllamaJudge=実LLM、失敗時は自動フォールバック）
+  naturalness / character_consistency / scene_consistency / continuity / acoustic_quality
+        ↓ Decision
+  KEEP / RE-PERFORM（再演技が悪化したら元の演技を KEEP）
+  ```
+
+  例: 直前に友人が死亡（sadness 0.82）なのに energy 0.97 で「大丈夫だよ」→
+  音質は完璧でも `character_consistency` 低点 → RE-PERFORM。
+  違反 diagnose（`energy_too_high_for_sadness` 等）は tweak 戦略に変換され、
+  再演技の plan に反映される。HVE path（`--hve`）では ContextJudge が常時有効。
 
 ```bash
 python main.py <novel> --hve            # HVE で演技合成（既存 TTS プロバイダの上に重ねる）

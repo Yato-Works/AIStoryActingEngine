@@ -332,12 +332,17 @@ def synthesize_all(memory: MemoryEngine, provider_name: str = "edge",
     provider = get_provider(provider_name)
     use_hve = hve
     _hve_profiles = _hve_profile_table(memory) if use_hve else {}
+    judge = None
+    if use_hve:
+        from llm_judge import ContextJudge
+        judge = ContextJudge()  # 3.5R: 演技正当性の審査（決定論・network 不要）
 
     segments = memory.load_segments()
     done_audio = memory.audio_done() if resume else set()
     todo = [s for s in segments if s.id not in done_audio and s.performance]
     ext = ".wav" if use_hve else getattr(provider, "ext", ".mp3")
     tone_cache: dict[int, str] = {}  # chunk_index -> scene tone (3.5Q)
+    prev_emotion: str | None = None  # 3.5R: continuity 審査用
     for i, seg in enumerate(todo, 1):
         if should_stop is not None and should_stop():
             raise JobCancelled("tts をキャンセル")
@@ -351,7 +356,8 @@ def synthesize_all(memory: MemoryEngine, provider_name: str = "edge",
                 seg.performance.voice,
                 (VoiceProfile(voice_id=seg.performance.voice), VoiceState()))
             render_segment(seg, _prof, _st, provider, clip, seed=seed_for(seg.id),
-                           tone=tone)
+                           tone=tone, judge=judge, prev_emotion=prev_emotion)
+            prev_emotion = seg.emotion
         else:
             provider.synthesize(seg.text, seg.performance, clip)  # type: ignore[arg-type]
         memory.set_audio(seg.id, str(clip))

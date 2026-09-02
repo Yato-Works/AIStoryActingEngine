@@ -58,7 +58,7 @@ Phase 1 からの進化（詳細は `docs/adr/0002-character-intelligence-and-du
 ```bash
 cd workers/python
 pip install -r requirements.txt -r requirements-dev.txt
-pytest                 # repo ルートの pytest.ini が tests/ を解決（122 tests）
+pytest                 # repo ルートの pytest.ini が tests/ を解決（133 tests）
 # または従来のスクリプト実行も可能:
 python engine/tests/test_phase2.py   # 全 39 項目
 ```
@@ -117,6 +117,9 @@ echo '{"jsonrpc":"2.0","id":1,"method":"ping"}' | python worker.py
     （キャラの感情 ≠ 必ず大声）
   - VoiceState は `voice_states` テーブルに永続化（resume でも状態が生きる）され、
     `VOICE_STATE_CHANGED` / `SCENE_EVENT` として Event Log に流れる（SSOT）
+- **State Decay の状態別減衰**（3.5S）: transient（緊張・怒り・恐怖・恥 ×0.45〜0.60）は
+  数発話で基線へ回帰し、persistent（悲しみ ×0.85・自信 ×0.90）は物語をまたいで残る
+  （「第3章で怒ったキャラが第8章まで怒りっぱなし」事故の防止 + 悲嘆はゆっくり癒える）
 - **Performance Judge**（3.5N/R）: 「音が綺麗か」ではなく「**演技として正しいか**」を審査する。
 
   ```
@@ -132,6 +135,21 @@ echo '{"jsonrpc":"2.0","id":1,"method":"ping"}' | python worker.py
   音質は完璧でも `character_consistency` 低点 → RE-PERFORM。
   違反 diagnose（`energy_too_high_for_sadness` 等）は tweak 戦略に変換され、
   再演技の plan に反映される。HVE path（`--hve`）では ContextJudge が常時有効。
+  OllamaJudge は「不整合を分析してから最後の行に JSON」を指示し
+  （format 制約だとモデルが数値例を複写する事故が実機で発生）、
+  `<think>` 推論を許容した最後の JSON 抽出でパースする。
+
+検証ツール:
+
+```bash
+# Performance Judge 実機比較（Ollama が必要。offline なら fallback 動作を確認）
+python engine/judge_live.py --model qwen3:4b
+
+# Human A/B Listening（盲検セッション生成: KPI 4 本柱の「人間の耳」）
+python engine/ab_export.py <book_id> --limit 5
+#  -> ab_session/<book_id>/ に variant_1/2.wav + playlist.html + listening_sheet.csv
+#     （対応表 answer_key.json は集計時まで開かない）
+```
 
 ```bash
 python main.py <novel> --hve            # HVE で演技合成（既存 TTS プロバイダの上に重ねる）

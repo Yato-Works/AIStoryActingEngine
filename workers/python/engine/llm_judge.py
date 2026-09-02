@@ -34,7 +34,7 @@ PerformancePlan: speed={speed} pitch={pitch} energy={energy}
 """
 
 
-JUDGE_CONTEXT_PROMPT = """あなたは音声ドラマの演技監督です。以下の演技を評価してください。
+JUDGE_CONTEXT_PROMPT = """あなたは音声ドラマの演技監督です。以下の演技を審査してください。
 
 重要: 「音が綺麗か」ではなく「演技として正しいか」を判定してください。
 キャラクターの状態・場面・直前の文脈に照らして、この演技が不自然でないかを見てください。
@@ -48,13 +48,21 @@ PerformancePlan: speed={speed} pitch={pitch} energy={energy}
 PreviousSegmentEmotion: {prev_emotion}
 AudioMetrics: {audio_metrics}
 
-例: 直前に友人が死亡した（sadness 0.82）のに energy 0.97 で明るく喋っていたら
+判定例: 直前に友人が死亡した（sadness 0.82）のに energy 0.97 で明るく喋っていたら
 character_consistency は低点。音質が完璧でも演技は 0 点です。
 
-以下の JSON のみを返却（各スコア 0.0..1.0）:
-{{"naturalness": 0.0, "character_consistency": 0.0, "scene_consistency": 0.0,
-  "continuity": 0.0, "acoustic_quality": 0.0,
-  "diagnoses": ["problem_slug", ...]}}
+各スコアの意味（0.0 = 完全に不一致 / 0.5 = 許容 / 1.0 = 完璧）:
+- naturalness          : 演技の自然さ（人工的な平坦さがないか）
+- character_consistency: CharacterState と演技の強さ・速さ・高さの一致度
+- scene_consistency    : SceneTone や場面の緊張と演技の一致度
+- continuity           : PreviousSegmentEmotion からの感情のつながり
+- acoustic_quality     : AudioMetrics から見た音響品質
+
+テキストと状態を必ず実際に読んで評価し、数値は自分の判断で決めてください。
+まず CharacterState と PerformancePlan の数値を比較して不整合を分析し、
+その後、**最後の行に** JSON オブジェクトのみを出力してください。
+JSON のキーは上記 5 つのスコアと、問題があれば short slug の配列 diagnoses
+（問題なければ ["ok"]）です。
 """
 
 JUDGE_SCHEMA = {
@@ -288,6 +296,53 @@ class ContextJudge:
         })
 
 
+def _extract_last_json(text: str) -> dict:
+    """text から最後に完結する JSON オブジェクトを抜き出す。
+
+    qwen3 等は <think>...</think> の推論の後に JSON を出すため、
+    前後のテキスト（think タグ・説明文）を許容して「最後の完結オブジェクト」
+    を採用する。波括弧の深さを数えて文字列リテラルを正しくスキップする。
+    """
+    import json as _json
+
+    candidates: list[str] = []
+    in_string = False
+    escape = False
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            if in_string:
+                escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start != -1:
+                    candidates.append(text[start:i + 1])
+                    start = -1
+    for cand in reversed(candidates):  # 最後の完結オブジェクトを優先
+        try:
+            obj = _json.loads(cand)
+            if isinstance(obj, dict):
+                return obj
+        except ValueError:
+            continue
+    raise ValueError("JSON オブジェクトが見つかりません")
+
+
 class OllamaJudge:
     """3.5R: 実 LLM による Performance Judge（全コンテキストを渡して JSON スコア）。
 
@@ -329,14 +384,19 @@ class OllamaJudge:
         ctx = self._context(plan, state, intent, emotion, tone, prev_emotion,
                             audio_metrics, intensity)
         try:
-            from analyzer import _extract_json, _post_with_retry
+            from analyzer import _post_with_retry
             payload = {"model": self.model, "prompt": self._prompt(ctx),
-                       "stream": False, "format": JUDGE_SCHEMA, "think": False,
-                       "options": {"temperature": 0.1}}
+                       "stream": False, "think": False,
+                       "options": {"temperature": 0.3}}
             resp = _post_with_retry(f"{self.base_url}/api/generate", payload,
                                     self.timeout)
-            data = resp.get("response") if isinstance(resp, dict) else None
-            rep = self._report_from(_extract_json(str(data)))
+            if not isinstance(resp, dict):
+                raise ValueError("Ollama 応答が dict ではありません")
+            # think=True のモデルは推論が thinking に分離することがある
+            data = resp.get("response") or resp.get("thinking") or ""
+            if not str(data).strip():
+                raise ValueError("Ollama 応答が空です")
+            rep = self._report_from(_extract_last_json(str(data)))
         except Exception:
             rep = self.fallback.evaluate(plan, state=state, intent=intent,
                                          emotion=emotion, tone=tone,

@@ -154,6 +154,40 @@ def test_evaluate_judge_passes_all_for_full_signature():
     assert r.character_consistency < 1.0
 
 
+def test_judge_prompt_has_no_literal_score_template():
+    """回帰: プロンプトに数値入り JSON 例があるとモデルがそれを複写する
+    （実機で全スコア 0.0 が返る事故）。key 列挙のみで数値例は載せない。"""
+    from llm_judge import JUDGE_CONTEXT_PROMPT
+    assert '"naturalness": 0.0' not in JUDGE_CONTEXT_PROMPT
+    assert '"naturalness": 0' not in JUDGE_CONTEXT_PROMPT
+
+
+def test_extract_last_json_handles_think_tags():
+    """<think> 推論 + 末尾 JSON（qwen3 実機形式）を正しく抜き出す。"""
+    from llm_judge import _extract_last_json
+    text = """Okay, let me analyze. </think>
+{
+  "naturalness": 0.5,
+  "character_consistency": 0.3,
+  "diagnoses": ["character_consistency"]
+}"""
+    obj = _extract_last_json(text)
+    assert obj["character_consistency"] == 0.3
+    assert obj["diagnoses"] == ["character_consistency"]
+    # JSON 内の波括弧・文字列リテラルに強い
+    text2 = 'メモ {"a": "}"}\n{"naturalness": 1.0}'
+    assert _extract_last_json(text2)["naturalness"] == 1.0
+    with pytest.raises(ValueError):
+        _extract_last_json("JSON なし")
+
+
+def test_judge_prompt_asks_for_reasoning_then_json():
+    """format 制約を付けず推論→最後に JSON、を指示していること（実機検証済み）。"""
+    from llm_judge import JUDGE_CONTEXT_PROMPT
+    assert "最後の行に" in JUDGE_CONTEXT_PROMPT
+    assert "不整合を分析" in JUDGE_CONTEXT_PROMPT
+
+
 # ---------------------------------------------------------------- OllamaJudge
 
 def test_ollama_judge_parses_llm_scores(monkeypatch):

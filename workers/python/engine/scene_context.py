@@ -97,14 +97,34 @@ def _clamp(v):
     return max(0.0, min(1.0, v))
 
 
-def decay_state(state: VoiceState, steps: int = 1, factor: float = 0.55) -> VoiceState:
-    """State Decay（3.5Q）: イベントに触れない状態は基線(0)へ減衰する。
+# ---- State Decay の状態別減衰率（3.5S: transient / persistent の分離） ----
+# transient（その場の感情）: すぐ基線へ戻る / persistent（心情・性格由来）: ゆっくり
+# 「怒りは数発話で収まるが、喪失の悲しみや自信は物語をまたいで残る」人間っぽさ。
+DECAY_RATES = {
+    "embarrassment": 0.45,  # 恥は最も早く風化する
+    "excitement": 0.50,
+    "tension": 0.55,        # 緊張（transient）
+    "anger": 0.55,          # 怒り（transient: 数発話で戻る）
+    "fear": 0.60,
+    "fatigue": 0.70,
+    "sadness": 0.85,        # 悲しみ・喪失（persistent 寄り: ゆっくり回復）
+    "confidence": 0.90,     # 自信（性格由来: ほぼ persistent）
+}
+TRANSIENT_STATES = frozenset(k for k, v in DECAY_RATES.items() if v <= 0.6)
+PERSISTENT_STATES = frozenset(STATE_KEYS) - TRANSIENT_STATES
 
-    steps チャンク分の減衰を 1 回で適用する（factor^steps）。
-    「怒る → 強くなる → 数発話 → 徐々に通常へ」の人間っぽい回帰。決定論。
+
+def decay_state(state: VoiceState, steps: int = 1, factor: float = None) -> VoiceState:
+    """State Decay（3.5Q/S）: イベントに触れない状態は基線(0)へ減衰する。
+
+    steps チャンク分の減衰を 1 回で適用する。
+    factor を明示すると全状態を一様に減衰（3.5Q 互換）。
+    None（既定）なら状態別 rate（DECAY_RATES）で transient は速く、
+    persistent はゆっくり回帰する。決定論。
     """
-    f = factor ** max(0, steps)
-    return VoiceState(**{k: round(_clamp(getattr(state, k) * f), 6)
+    rates = ({k: factor for k in STATE_KEYS} if factor is not None
+             else DECAY_RATES)
+    return VoiceState(**{k: round(_clamp(getattr(state, k) * (rates[k] ** max(0, steps))), 6)
                          for k in STATE_KEYS})
 
 

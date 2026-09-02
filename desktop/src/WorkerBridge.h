@@ -34,6 +34,7 @@ public:
     // ---- リクエスト（QML から Q_INVOKABLE で呼ぶ） ----
     Q_INVOKABLE void ping();
     Q_INVOKABLE void listBooks();
+    Q_INVOKABLE void getBook(const QString &bookId);   // 本棚 → プレイヤー（Phase 3C）
     Q_INVOKABLE void listEvents(int limit = 20, const QString &type = QString());
     Q_INVOKABLE void search(const QString &query, int limit = 10);
     Q_INVOKABLE void startJob(const QString &novel, const QString &provider,
@@ -50,6 +51,7 @@ signals:
     void runningChanged(bool running);
     void pingResult(bool ok);
     void booksLoaded(QVariantList books);
+    void bookLoaded(QVariant book);         // get_book の応答（プレイヤー用）
     void eventsLoaded(QVariantList events);
     void searchResults(QVariantList results);
     void jobStarted(QString jobId, QString bookId);

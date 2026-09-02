@@ -14,6 +14,7 @@
   start_job {novel, ...}→ pipeline Job をバックグラウンドで開始（即 job_id 返却）
   get_job {job_id}      → Job / Step の状態と進捗（ポーリング用）
   cancel_job {job_id}   → 協調的キャンセル要求
+  get_book {book_id}    → 本の詳細 + 音声成果物 + 章オフセット（プレイヤー用）
   pause_job {job_id}    → 一時停止（次のチャンク/セグメント境界でブロック）
   resume_job {job_id}   → 一時停止解除 / 失敗・キャンセル Job の再開
   list_jobs {limit}     → Job History（履歴一覧）
@@ -144,9 +145,9 @@ class EngineWorker:
 
     def rpc_initialize(self) -> dict:
         return {"protocol": PROTOCOL_VERSION,
-                "methods": ["initialize", "ping", "list_books", "get_events",
-                            "search", "start_job", "get_job", "cancel_job",
-                            "pause_job", "resume_job", "list_jobs"],
+                "methods": ["initialize", "ping", "list_books", "get_book",
+                            "get_events", "search", "start_job", "get_job",
+                            "cancel_job", "pause_job", "resume_job", "list_jobs"],
                 "db": str(self.db_path)}
 
     def rpc_ping(self) -> dict:
@@ -156,9 +157,110 @@ class EngineWorker:
         conn = self._connect()
         try:
             return {"books": _rowdicts(
-                conn, "SELECT id, title, created_at FROM books ORDER BY created_at")}
+                conn, """SELECT b.id, b.title, b.created_at,
+                                (SELECT COUNT(*) FROM segments s
+                                  WHERE s.book_id = b.id) AS segments,
+                                (SELECT COUNT(*) FROM segments s
+                                  WHERE s.book_id = b.id
+                                    AND s.audio_path IS NOT NULL) AS audio_done
+                         FROM books b ORDER BY b.created_at""")}
         finally:
             conn.close()
+
+    def rpc_get_book(self, book_id: str) -> dict:
+        """本棚 -> プレイヤー用の本の詳細（Phase 3C Bookshelf & Player）。
+
+        音声成果物（m4b 優先、無ければ wav）と、章ごとのオーディオブック内
+        開始秒（章シーク用）を返す。
+        """
+        book_id = str(book_id)
+        conn = self._connect()
+        try:
+            rows = _rowdicts(
+                conn, "SELECT id, title, created_at FROM books WHERE id=?",
+                (book_id,))
+            if not rows:
+                raise _WorkerError(INVALID_PARAMS, f"book not found: {book_id}")
+            book = rows[0]
+            stats = _rowdicts(
+                conn, """SELECT COUNT(*) AS segments,
+                                SUM(audio_path IS NOT NULL) AS audio_done
+                         FROM segments WHERE book_id=?""", (book_id,))[0]
+            arts = _rowdicts(
+                conn, """SELECT a.kind, a.path FROM job_artifacts a
+                         JOIN jobs j ON j.id = a.job_id
+                         WHERE j.book_id=? AND j.status='completed'
+                         ORDER BY a.created_at DESC""", (book_id,))
+        finally:
+            conn.close()
+
+        audio = None
+        for kind in ("m4b", "wav"):
+            for a in arts:
+                if a["kind"] == kind and a["path"] and Path(a["path"]).exists():
+                    audio = {"kind": kind, "path": a["path"]}
+                    break
+            if audio:
+                break
+
+        chapters, duration = self._chapter_offsets(book_id)
+        return {**book,
+                "segments": int(stats["segments"] or 0),
+                "audio_done": int(stats["audio_done"] or 0),
+                "audio": audio,
+                "duration_seconds": duration,
+                "chapters": chapters}
+
+    def _chapter_offsets(self, book_id: str) -> tuple[list[dict], float | None]:
+        """章タイトル + オーディオブック内の章開始秒を計算する。
+
+        クリップ長は wav なら wave モジュール、それ以外は ffprobe で計測。
+        計測できないクリップが混ざった時点で以降の offset は None
+        （章シークは無効になるが再生は可能）。
+        """
+        import wave as _wave
+
+        from audio import probe_duration
+        from memory import MemoryEngine
+
+        def clip_seconds(path: str):
+            try:
+                if path.lower().endswith(".wav"):
+                    with _wave.open(path, "rb") as w:
+                        rate = float(w.getframerate() or 1)
+                        return w.getnframes() / rate
+                d = probe_duration(Path(path))
+                return float(d) if d else None
+            except Exception:
+                return None
+
+        mem = MemoryEngine(self.db_path, book_id)
+        try:
+            titles = mem.chapter_titles()
+            segs = mem.audio_segments()
+        finally:
+            mem.close()
+
+        chapters: list[dict] = []
+        offset = 0.0
+        measurable = True
+        cur_chapter = None
+        for _sid, chapter, path in segs:
+            if chapter != cur_chapter:
+                chapters.append({
+                    "chapter": chapter,
+                    "title": titles.get(chapter, f"第{chapter}章"),
+                    "offset_seconds": round(offset, 2) if measurable else None,
+                })
+                cur_chapter = chapter
+            if not measurable:
+                continue
+            secs = clip_seconds(path)
+            if secs is None:
+                measurable = False
+            else:
+                offset += secs
+        return chapters, (round(offset, 2) if segs and measurable else None)
 
     def rpc_get_events(self, limit: int = 20, type: str | None = None) -> dict:
         conn = self._connect()

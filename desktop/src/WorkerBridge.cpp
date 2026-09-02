@@ -142,6 +142,12 @@ void WorkerBridge::listBooks()
     send(makeRequest(nextId(), QStringLiteral("list_books"), {}));
 }
 
+void WorkerBridge::getBook(const QString &bookId)
+{
+    send(makeRequest(nextId(), QStringLiteral("get_book"),
+                     {{QStringLiteral("book_id"), bookId}}));
+}
+
 void WorkerBridge::listEvents(int limit, const QString &type)
 {
     QJsonObject params{{"limit", limit}};
@@ -230,6 +236,8 @@ void WorkerBridge::handleResponse(const QJsonObject &resp)
         emit pingResult(result.toObject().value("pong").toBool());
     } else if (method == QStringLiteral("list_books")) {
         emit booksLoaded(toVariantList(result.toObject().value("books")));
+    } else if (method == QStringLiteral("get_book")) {
+        emit bookLoaded(result.toVariant());
     } else if (method == QStringLiteral("get_events")) {
         emit eventsLoaded(toVariantList(result.toObject().value("events")));
     } else if (method == QStringLiteral("search")) {

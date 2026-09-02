@@ -6,6 +6,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from worker import (EngineWorker, INVALID_PARAMS, METHOD_NOT_FOUND, PARSE_ERROR)
@@ -99,6 +101,102 @@ def test_start_and_get_job(tmp_path: Path) -> None:
             break
         time.sleep(0.05)
     assert r["result"]["status"] == "completed"
+
+
+def test_get_book_returns_audio_and_chapters(tmp_path: Path) -> None:
+    """rpc_get_book: 音声成果物 + 章オフセット（Phase 3C Bookshelf & Player）。"""
+    import struct
+    import wave
+
+    w = make_worker(tmp_path)
+    db_path = tmp_path / "story.db"
+    from memory import MemoryEngine
+    from models import DirectedSegment, Performance
+
+    mem = MemoryEngine(db_path, "shelf_test", title="本棚テスト")
+    try:
+        clips = []
+        for i in range(1, 5):
+            chapter = 1 if i <= 2 else 2
+            clip = tmp_path / f"seg_{i:03d}.wav"
+            with wave.open(str(clip), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(24000)
+                wf.writeframes(struct.pack("<h", 0) * 24000)  # 1.0 秒
+            clips.append(clip)
+            mem.save_segment(DirectedSegment(
+                id=f"seg_{i:03d}", type="narration", speaker="narrator",
+                text=f"第{chapter}章のセグメント{i}", emotion="neutral",
+                intensity=0.3, chapter=chapter, chunk_index=0,
+                performance=Performance(voice="voice_narrator", mode="narration",
+                                        emotion="neutral", intensity=0.3,
+                                        pace=1.0, pitch=0.0)))
+            mem.set_audio(f"seg_{i:03d}", str(clip))
+        mem.add_scene(1, 0, "夜の街", "夜", "quiet")
+        mem.add_scene(2, 1, "朝の部屋", "朝", "calm")
+        # 完了 Job の成果物（audiobook 相当）を登録
+        audiobook = tmp_path / "audiobook.wav"
+        with wave.open(str(audiobook), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(24000)
+            wf.writeframes(struct.pack("<h", 0) * 24000)  # 1.0 秒
+        from jobs import COMPLETED, RUNNING, JobManager
+        jm = JobManager(mem)
+        job_id = jm.create_job("pipeline")
+        jm.transition(job_id, RUNNING)
+        jm.transition(job_id, COMPLETED)
+        jm.add_artifact(job_id, 3, "wav", str(audiobook))
+    finally:
+        mem.close()
+
+    res = w.handle_line(json.dumps(
+        {"jsonrpc": "2.0", "id": 20, "method": "get_book",
+         "params": {"book_id": "shelf_test"}}))
+    book = res["result"]
+    assert book["title"] == "本棚テスト"
+    assert book["segments"] == 4 and book["audio_done"] == 4
+    assert book["audio"]["kind"] == "wav"
+    assert book["audio"]["path"].endswith("audiobook.wav")
+    assert book["duration_seconds"] == pytest.approx(4.0, abs=0.01)
+    chs = book["chapters"]
+    assert [c["chapter"] for c in chs] == [1, 2]
+    assert chs[0]["offset_seconds"] == pytest.approx(0.0, abs=0.01)
+    assert chs[1]["offset_seconds"] == pytest.approx(2.0, abs=0.01)
+    assert chs[1]["title"] == "朝の部屋"
+
+
+def test_get_book_unknown_book_is_invalid_params(tmp_path: Path) -> None:
+    w = make_worker(tmp_path)
+    res = w.handle_line(json.dumps(
+        {"jsonrpc": "2.0", "id": 21, "method": "get_book",
+         "params": {"book_id": "nope"}}))
+    assert res["error"]["code"] == INVALID_PARAMS
+
+
+def test_list_books_includes_audio_progress(tmp_path: Path) -> None:
+    w = make_worker(tmp_path)
+    db_path = tmp_path / "story.db"
+    from memory import MemoryEngine
+    from models import DirectedSegment, Performance
+
+    mem = MemoryEngine(db_path, "list_test", title="List Test")
+    try:
+        mem.save_segment(DirectedSegment(
+            id="seg_001", type="narration", speaker="narrator", text="あ",
+            emotion="neutral", intensity=0.3, chapter=1, chunk_index=0,
+            performance=Performance(voice="voice_narrator", mode="narration",
+                                    emotion="neutral", intensity=0.3,
+                                    pace=1.0, pitch=0.0)))
+        mem.set_audio("seg_001", "/dummy/seg_001.wav")
+    finally:
+        mem.close()
+    res = w.handle_line(json.dumps(
+        {"jsonrpc": "2.0", "id": 22, "method": "list_books"}))
+    books = res["result"]["books"]
+    row = next(b for b in books if b["id"] == "list_test")
+    assert row["segments"] == 1 and row["audio_done"] == 1
 
 
 def test_cancel_job(tmp_path: Path) -> None:

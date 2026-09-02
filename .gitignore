@@ -51,3 +51,4 @@ aqtinstall.log
 workers/python/engine/aiae_selftest.txt
 workers/python/engine/selftest_err.log
 workers/python/engine/worker_dbg.err
+desktop/*.txt

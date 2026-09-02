@@ -224,6 +224,8 @@ PERFORMANCE_EXAMPLE = {
                 "style": "Neutral",
                 "carryover": False,
                 "baseline": False,
+                "intent": None,
+                "prosody_curve": None,
                 "relationship": "",
             },
         }

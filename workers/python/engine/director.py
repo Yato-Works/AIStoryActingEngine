@@ -31,16 +31,24 @@ _EMOTION_STYLE = {
 _EMOTION_STYLE_DEFAULT = ((1.0, 0.0), (0.0, 0.0), (1.0, 0.0))
 
 
-def emotion_style(emotion: str, intensity: float) -> tuple[float, float, float]:
-    """感情と強度 → (pace倍率, pitch加算, volume)。強度で係数が強まる。"""
-    (p0, pb), (q0, qb), (r0, rb) = _EMOTION_STYLE.get(emotion, _EMOTION_STYLE_DEFAULT)
-    boost = intensity  # 0.0..1.0
+def emotion_style(emotion: str, intensity: float = 0.3, seed: int | None = 42) -> tuple[float, float, float]:
+    """感情・強度・seed -> (pace倍率, pitch加算, volume)。
+
+    3.5C Micro Prosody: seed 固定で再現可能な micro variation。
+    seed は character_seed ^ emotion_seed ^ scene_seed ^ utterance_seed を推奨。
+    毎回同じ固定値震えを防ぐ。"""
+    (p0, pb), (q0, qb), (r0, rb) = _EMOTION_STYLE.get(
+        contracts.normalize_emotion(emotion), _EMOTION_STYLE_DEFAULT)
+    boost = contracts.clamp(intensity, 0.0, 1.0)
     pace = p0 + pb * boost
     pitch = q0 + qb * boost
     volume = r0 + rb * boost
-    return pace, pitch, contracts.clamp(volume, 0.5, 1.5)
-
-
+    import random as _rng
+    rng = _rng.Random(seed)
+    pace += rng.uniform(-0.02, 0.02)
+    pitch += rng.uniform(-0.04, 0.04)
+    volume += rng.uniform(-0.03, 0.03)
+    return round(pace, 4), round(pitch, 4), contracts.clamp(round(volume, 4), 0.5, 1.5)
 
 
 class CastingDirector:
@@ -284,3 +292,218 @@ class CharacterAwareDirector:
     def _style(self, emotion: str, intensity: float) -> tuple[float, float, float]:
         """(pace倍率, pitch加算, volume) を感情と強度から決める（共通実装に委譲）。"""
         return emotion_style(emotion, intensity)
+
+# ---------------------------------------------------------------- 3.5D Time-based Prosody
+# "emotion_style" (Micro Variation v1) は声全体のパラメータを揺らすだけ。
+# ここでは "演技を時間軸上でどう聴かせるか" を決める phrase-level curve を返す。
+# seed 固定 -> 同じ Story/Character/Scene/Seed なら同じ Performance (再生可能)。
+
+INTENT_SHAPES = {
+    "neutral":              {"speed":[1.00,1.00,1.00,1.00], "pitch":[0.00,0.00,0.00,0.00], "energy":[0.85,0.85,0.85,0.85]},
+    "hesitant_denial":      {"speed":[0.88,0.80,1.00,0.85], "pitch":[-0.05,-0.10,0.00,-0.05], "energy":[0.60,0.45,0.70,0.55]},
+    "reluctant_agreement":  {"speed":[0.90,0.80,0.85,1.00], "pitch":[-0.02,-0.03,0.00,0.03], "energy":[0.55,0.50,0.60,0.85]},
+    "suppressed_anger":     {"speed":[0.95,0.90,1.00,0.80], "pitch":[0.00,0.00,0.04,-0.06], "energy":[0.55,0.50,0.90,0.40]},
+    "realization":          {"speed":[0.82,1.00,1.18,1.00], "pitch":[0.00,0.05,0.14,0.06], "energy":[0.40,0.60,1.00,0.75]},
+    "whispered_confession": {"speed":[0.85,0.90,0.95,0.80], "pitch":[-0.06,-0.04,0.00,-0.03], "energy":[0.30,0.35,0.40,0.30]},
+    "awkward_silence":      {"speed":[0.70,1.00,0.60,0.90], "pitch":[-0.04,0.00,-0.02,0.01], "energy":[0.20,0.60,0.15,0.50]},
+    "deadpan":              {"speed":[1.00,0.95,1.05,1.00], "pitch":[0.00,0.00,0.00,0.00], "energy":[0.65,0.60,0.70,0.65]},
+    "suppressed_laughter":  {"speed":[0.88,1.12,0.92,0.88], "pitch":[0.00,0.10,0.05,0.00], "energy":[0.40,0.95,0.60,0.45]},
+}
+
+
+def normalize_intent(raw):
+    """LLM 出力の intent 語彙を INTENT_SHAPES キーへ正規化。未知は neutral。"""
+    if not isinstance(raw, str) or not raw.strip():
+        return "neutral"
+    key = raw.strip().lower().replace(" ", "_")
+    return key if key in INTENT_SHAPES else "neutral"
+
+
+EMOTION_TO_INTENT = {
+    "anxious": "hesitant_denial",
+    "angry": "suppressed_anger",
+    "sad": "whispered_confession",
+    "surprised": "realization",
+    "happy": "suppressed_laughter",
+    "fearful": "awkward_silence",
+    "tender": "reluctant_agreement",
+    "sarcastic": "suppressed_anger",
+}
+
+
+def emotion_to_intent(emotion):
+    """emotion -> Intent への推定（未知は neutral）。Voice Director が決める本来の Intent は、
+    後で LLM/シーン文脈から上書きされる。"""
+    from schema import normalize_emotion
+    return EMOTION_TO_INTENT.get(normalize_emotion(emotion))
+
+
+def _interp_shape(anchors, n):
+    """4-anchored intent shape を n phrases 用に補間/間引き。"""
+    if n <= 0:
+        return []
+    if n == 1:
+        return [sum(anchors) / len(anchors)]
+    if n == len(anchors):
+        return list(anchors)
+    if n < len(anchors):
+        return [anchors[int(round(i * (len(anchors) - 1) / (n - 1)))] for i in range(n)]
+    out = []
+    for k in range(n):
+        x = k * (len(anchors) - 1) / (n - 1)
+        i0 = int(x)
+        frac = x - i0
+        i1 = min(i0 + 1, len(anchors) - 1)
+        out.append(anchors[i0] + (anchors[i1] - anchors[i0]) * frac)
+    return out
+
+
+def plan_prosody(emotion="neutral", intensity=0.3, intent=None, num_phrases=4,
+                 seed=42, base_phrase_ms=920.0):
+    """Time-based Prosody: phrase-level speed/pitch/energy + timing_ms。
+
+    毎回同じ固定値震えを避ける seed-based phrase-local micro jitter を加えるが、
+    seed 固定なら再生可能。"""
+    import random as _random
+    intent_key = normalize_intent(intent)
+    shape = INTENT_SHAPES[intent_key]
+    base_pace, base_pitch, base_volume = emotion_style(emotion, intensity, seed=seed)
+    speed = _interp_shape(shape["speed"], num_phrases)
+    pitch = _interp_shape(shape["pitch"], num_phrases)
+    energy = _interp_shape(shape["energy"], num_phrases)
+    cur_sp, cur_pi, cur_en, timing = [], [], [], []
+    onset = 0.0
+    for i in range(num_phrases):
+        ms = speed[i] * base_pace
+        mi = pitch[i] + base_pitch
+        me = energy[i] * base_volume
+        local = _random.Random(seed ^ (i * 7919) ^ 0x9E37)
+        ms += local.uniform(-0.015, 0.015)
+        mi += local.uniform(-0.030, 0.030)
+        me += local.uniform(-0.020, 0.020)
+        cur_sp.append(round(contracts.clamp(ms, 0.5, 1.5), 4))
+        cur_pi.append(round(contracts.clamp(mi, -1.0, 1.0), 4))
+        cur_en.append(round(contracts.clamp(me, 0.2, 1.5), 4))
+        timing.append(round(onset, 1))
+        onset += base_phrase_ms / cur_sp[-1]
+    return {
+        "intent": intent_key,
+        "speed": cur_sp,
+        "pitch": cur_pi,
+        "energy": cur_en,
+        "timing_ms": timing,
+        "total_ms": round(onset, 1),
+    }
+
+
+def timing_humanize(text, emotion="neutral", intent=None, seed=42):
+    """Text -> humanized phrase timing (semantic phrase boundary)。
+
+    文章を「。、！？」等の意味区切りで phrase に切り、plan_prosody の phrase curve を当てる。
+    単純句点分割ではなく Voice Director が breath unit で区切るイメージ。"""
+    import re as _re
+    raw = _re.split(r"[。、．，！？!?]", text)
+    phrases = [ph.strip() for ph in raw if ph.strip()]
+    n = max(len(phrases), 1)
+    plan = plan_prosody(emotion, intent=intent, num_phrases=n, seed=seed)
+    return [{"text": phrases[i],
+             "speed": plan["speed"][i],
+             "pitch": plan["pitch"][i],
+             "energy": plan["energy"][i],
+             "onset_ms": plan["timing_ms"][i]} for i in range(n)]
+
+# ---------------------------------------------------------------- 3.5F Character Voice Memory
+# VoiceProfile = キャラクターの演技DNA（不変）。VoiceState = 現在の演技状態（可変）。
+# apply_voice_state は time-based prosody curve を state x profile で変調し、
+# 「同じ台詞でもキャラ・状態によって全く違う発話」を実現する。
+
+def _state_deltas(state):
+    """VoiceState -> (speed_mult, pitch_add, energy_mult, pause_mult, breath_freq, hesitation)。"""
+    if state is None:
+        return 1.0, 0.0, 1.0, 1.0, 0.0, 0.0
+    t = float(state.tension); f = float(state.fatigue)
+    c = float(state.confidence); e = float(state.excitement)
+    # ---- 3.5Q: SceneEvent 由来の拡張状態（無い属性は 0 扱いで後方互換）----
+    fe = float(getattr(state, "fear", 0.0) or 0.0)
+    an = float(getattr(state, "anger", 0.0) or 0.0)
+    sa = float(getattr(state, "sadness", 0.0) or 0.0)
+    em = float(getattr(state, "embarrassment", 0.0) or 0.0)
+    speed = (1.0 + 0.10 * e + 0.08 * c - 0.12 * f - 0.06 * t
+             + 0.10 * an - 0.08 * sa)
+    pitch = (0.03 * e + 0.05 * c - 0.08 * f + 0.06 * t
+             + 0.08 * fe + 0.05 * an - 0.06 * sa)
+    energy = (1.0 + 0.15 * e + 0.10 * c - 0.15 * f - 0.10 * t
+              + 0.20 * an - 0.15 * sa - 0.05 * fe)
+    pause = 1.0 + 0.20 * t + 0.15 * f - 0.10 * c + 0.15 * fe + 0.10 * em
+    breath = 0.30 * t + 0.35 * f - 0.15 * e + 0.25 * fe + 0.10 * em
+    hesit = 0.40 * t + 0.25 * f - 0.20 * c + 0.30 * em + 0.20 * fe
+    return speed, pitch, energy, pause, breath, hesit
+
+
+def _timing_jitter(seed, idx):
+    """キャラクター固有のタイミング癖：seed 固定で再生可能な onset jitter。"""
+    import random as _r
+    r = _r.Random(seed ^ (idx * 7919) ^ 0x5A5A5A5A)
+    return r.uniform(-1.0, 1.0)
+
+
+def apply_voice_state(plan, profile, state=None, seed=42):
+    """3.5F/3.5H: plan_prosody curve に VoiceProfile + VoiceState の変調を適用。seed 固定で再生可能。
+
+    timing_habit はキャラクター固有の「喋りのタイミング癖」（3.5H Timing Humanization）
+    を phrase onset に微小オフセットとして加える。"""
+    import copy
+    p = copy.deepcopy(plan)
+    spd_s, pit_s, ene_s, pause_s, breath_s, hesit_s = _state_deltas(state)
+    pb = float(getattr(profile, "base_pace", 1.0) or 1.0)
+    pp = float(getattr(profile, "base_pitch", 0.0) or 0.0)
+    pe = float(getattr(profile, "base_energy", 0.8) or 0.8)
+    drop = float(getattr(profile, "sentence_end_drop", 0.0) or 0.0)
+    emp = float(getattr(profile, "emphasis_strength", 0.0) or 0.0)
+    pause_tend = float(getattr(profile, "pause_tendency", 0.0) or 0.0)
+    hesit_tr = float(getattr(profile, "hesitation", 0.0) or 0.0)
+    timing_habit = float(getattr(profile, "timing_habit", 0.0) or 0.0)
+    n = len(p["speed"])
+    total = float(p.get("total_ms", 0.0))
+    base_ms = (total / n) if (n and total) else 920.0
+    on = 0.0
+    ns, nppitch, ne, nt = [], [], [], []
+    for i in range(n):
+        s = p["speed"][i] * pb * spd_s
+        pi = p["pitch"][i] + pp + pit_s
+        en = p["energy"][i] * pe * (0.5 + 0.5 * ene_s)
+        if i == n - 1:
+            s *= (1.0 - 0.12 * drop)
+            pi -= 0.05 * drop
+        if emp > 0 and i == n // 2:
+            s *= (1.0 + 0.05 * emp)
+            en *= (1.0 + 0.08 * emp)
+            pi += 0.03 * emp
+        s = round(contracts.clamp(s, 0.5, 1.5), 4)
+        pi = round(contracts.clamp(pi, -1.0, 1.0), 4)
+        en = round(contracts.clamp(en, 0.2, 1.5), 4)
+        ns.append(s); nppitch.append(pi); ne.append(en)
+        nt.append(round(on, 1))
+        gap = base_ms / s
+        if i > 0:
+            gap += (pause_tend * 0.5 + hesit_tr * 0.4 + max(hesit_s, 0.0)) * 150.0
+            gap += timing_habit * _timing_jitter(seed, i) * 40.0
+        on += gap
+    p["speed"] = ns; p["pitch"] = nppitch; p["energy"] = ne
+    p["timing_ms"] = nt; p["total_ms"] = round(on, 1)
+    p["pause_tendency"] = round(pause_tend * pause_s, 3)
+    p["hesitation"] = round(hesit_tr + max(hesit_s, 0.0), 3)
+    p["breath_frequency"] = round(max(breath_s, 0.0), 3)
+    return p
+
+
+def voice_vocalization(profile, intent_key):
+    """3.5F: intent に応じてキャラクター特有の口頭語/躊躇を返す（habits テーブル）。"""
+    habits = dict(getattr(profile, "habits", {}) or {})
+    mapping = {
+        "hesitant_denial": habits.get("disbelief"),
+        "reluctant_agreement": habits.get("thinking"),
+        "suppressed_laughter": habits.get("surprise"),
+        "awkward_silence": habits.get("thinking"),
+    }
+    return mapping.get(intent_key) or habits.get("thinking") or "え"

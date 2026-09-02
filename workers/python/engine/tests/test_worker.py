@@ -20,7 +20,7 @@ def make_worker(tmp_path: Path) -> EngineWorker:
 
     # テスト用の pipeline_fn: start_job が先行作成した Job を完了状態にする fake
     def fake_pipeline(novel_path, provider_name="edge", resume=True, no_tts=False,
-                      model="qwen3:4b", should_stop=None):
+                      model="qwen3:4b", hve=False, should_stop=None):
         from jobs import COMPLETED, JobManager
         from memory import MemoryEngine
         mem = MemoryEngine(db_path, engine_slug(novel_path), title="")

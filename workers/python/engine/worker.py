@@ -196,7 +196,7 @@ class EngineWorker:
 
     def rpc_start_job(self, novel: str, provider: str = "edge",
                       resume: bool = True, no_tts: bool = False,
-                      model: str = "qwen3:4b") -> dict:
+                      model: str = "qwen3:4b", hve: bool = False) -> dict:
         novel_path = Path(novel)
         if not novel_path.exists():
             raise _WorkerError(INVALID_PARAMS, f"novel not found: {novel}")
@@ -213,16 +213,17 @@ class EngineWorker:
         try:
             job_id = JobManager(mem).create_job(
                 "pipeline", {"provider": provider, "model": model,
-                             "novel": str(novel_path), "no_tts": no_tts})
+                             "novel": str(novel_path), "no_tts": no_tts,
+                             "hve": hve})
         finally:
             mem.close()
 
         self._spawn_pipeline(novel_path, provider, resume=resume,
-                             no_tts=no_tts, model=model)
+                             no_tts=no_tts, model=model, hve=hve)
         return {"job_id": job_id, "book_id": book_id}
 
     def _spawn_pipeline(self, novel_path: Path, provider: str, resume: bool,
-                        no_tts: bool, model: str) -> str:
+                        no_tts: bool, model: str, hve: bool = False) -> str:
         """pipeline Job をバックグラウンドスレッドで実行する（job_id を返す）。"""
         from jobs import JobManager
 
@@ -232,7 +233,8 @@ class EngineWorker:
         try:
             job_id, _ = JobManager(mem).resume_or_create(
                 "pipeline", {"provider": provider, "model": model,
-                             "novel": str(novel_path), "no_tts": no_tts})
+                             "novel": str(novel_path), "no_tts": no_tts,
+                             "hve": hve})
         finally:
             mem.close()
 
@@ -242,7 +244,7 @@ class EngineWorker:
                 try:
                     self.pipeline_fn(
                         novel_path=novel_path, provider_name=provider,
-                        resume=resume, no_tts=no_tts, model=model,
+                        resume=resume, no_tts=no_tts, model=model, hve=hve,
                         should_stop=self._gate(job_id))
                 except Exception:
                     pass  # 状態は DB（FAILED/CANCELLED）に記録済み

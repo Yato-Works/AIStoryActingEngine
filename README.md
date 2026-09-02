@@ -58,7 +58,7 @@ Phase 1 からの進化（詳細は `docs/adr/0002-character-intelligence-and-du
 ```bash
 cd workers/python
 pip install -r requirements.txt -r requirements-dev.txt
-pytest                 # repo ルートの pytest.ini が tests/ を解決（18 tests）
+pytest                 # repo ルートの pytest.ini が tests/ を解決（104 tests）
 # または従来のスクリプト実行も可能:
 python engine/tests/test_phase2.py   # 全 39 項目
 ```
@@ -91,8 +91,38 @@ echo '{"jsonrpc":"2.0","id":1,"method":"ping"}' | python worker.py
 ```
 
 主なメソッド: `initialize` / `ping` / `list_books` / `get_events` / `search` /
-`start_job`（非同期実行, 即 job_id 返却）/ `get_job`（進捗ポーリング）/
+`start_job`（非同期実行, 即 job_id 返却, `hve` オプション対応）/ `get_job`（進捗ポーリング）/
 `cancel_job`（協調的キャンセル）。詳細は `docs/adr/0004-json-rpc-worker.md`。
+
+### Human Voice Engine（Phase 3.5M〜Q）
+
+`--hve` で Text-to-Speech ではなく **Text-to-Character-Performance-to-Speech** として合成する:
+
+- **Prosody Curve**: intent / emotion / VoiceState（tension/fatigue/confidence/excitement/
+  fear/anger/sadness/embarrassment）から時間ベースの speed / pitch / energy カーブを
+  決定論的 seed で生成（3.5F/G/H/K）
+- **Breath Engine**: 息継ぎ（inhale/exhale）をフレーズ間に注入し、micro crossfade で 1 本に作曲。
+  出力は常に `.wav`（3.5M）
+- **Acoustic QA**: 合成結果の Human Likeness スコアが閾値未満なら Auto Re-performance（3.5I）
+- **Scene Context Integration**（3.5Q）: 因果は
+  `Story → SceneEvent → VoiceState → VoiceProfile → Performance Plan → HVE`。
+  LLM に演技を直接させず「誰の状態がどう変化したか（state_delta）」だけを受け取る:
+
+  - アナライザーが `scene_events`（category / intensity / targets / state_delta）を抽出
+  - `SceneEvent → VoiceState デルタ` は Engine 側が変換（targets はフル効果、
+    周囲は ×0.4 減衰で場の空気が伝播）
+  - **State Decay**: イベントに触れなかった状態は毎チャンク ×0.55 で基線へ回帰
+    （「怒る → 数発話 → 徐々に通常へ」）
+  - **Scene Override**: `comedy` トーンのチャンクは energy を抑制
+    （キャラの感情 ≠ 必ず大声）
+  - VoiceState は `voice_states` テーブルに永続化（resume でも状態が生きる）され、
+    `VOICE_STATE_CHANGED` / `SCENE_EVENT` として Event Log に流れる（SSOT）
+- **Performance Judge**（3.5N）は単体モジュールとして提供。実 LLM 化は次フェーズ（3.5R）
+
+```bash
+python main.py <novel> --hve            # HVE で演技合成（既存 TTS プロバイダの上に重ねる）
+python main.py <novel> --job --hve      # Job System 経由でも可（payload に hve を記録）
+```
 
 
 ## Phase 1 の構成（Story Engine）

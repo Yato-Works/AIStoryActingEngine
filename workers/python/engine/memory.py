@@ -22,7 +22,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from models import Character, DirectedSegment, Dossier, Relationship, StoryState, VoiceProfile
+from models import (Character, DirectedSegment, Dossier, Relationship,
+                    StoryState, VoiceProfile, VoiceState)
 import schema as contracts
 
 
@@ -93,6 +94,15 @@ CREATE TABLE IF NOT EXISTS job_steps(
 CREATE TABLE IF NOT EXISTS job_artifacts(
   job_id TEXT, step_seq INTEGER, kind TEXT, path TEXT, created_at TEXT,
   PRIMARY KEY(job_id, step_seq, kind, path));
+-- ---- Scene Context (3.5Q): VoiceState の永続化 + SceneEvent ログ ----
+CREATE TABLE IF NOT EXISTS voice_states(
+  book_id TEXT, character_id TEXT, state_json TEXT,
+  updated_chunk INTEGER, updated_at TEXT,
+  PRIMARY KEY(book_id, character_id));
+CREATE TABLE IF NOT EXISTS scene_events(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  book_id TEXT, chunk_index INTEGER, category TEXT, description TEXT,
+  intensity REAL, targets TEXT, tone TEXT);
 CREATE INDEX IF NOT EXISTS idx_segments_speaker ON segments(book_id, speaker);
 CREATE INDEX IF NOT EXISTS idx_memories_char ON memories(book_id, character_id);
 """
@@ -211,6 +221,68 @@ class MemoryEngine:
             params,
         )
         self.conn.commit()
+
+    # ------------------------------------------------------- voice state (3.5Q)
+
+    _VOICE_STATE_KEYS = ("tension", "fatigue", "confidence", "excitement",
+                         "fear", "anger", "sadness", "embarrassment")
+
+    def get_voice_state(self, character_id: str) -> VoiceState | None:
+        """永続化された演技状態（無ければ None）。"""
+        row = self.conn.execute(
+            "SELECT state_json FROM voice_states WHERE book_id=? AND character_id=?",
+            (self.book_id, character_id),
+        ).fetchone()
+        return VoiceState.model_validate_json(row["state_json"]) if row else None
+
+    def save_voice_state(self, character_id: str, state: VoiceState,
+                         chunk_index: int | None = None) -> None:
+        """VoiceState を保存し、変化があれば Event Log にも流す（SSOT 原則）。"""
+        old = self.get_voice_state(character_id)
+        self.conn.execute(
+            """INSERT INTO voice_states(book_id, character_id, state_json,
+                                        updated_chunk, updated_at)
+               VALUES(?,?,?,?,?)
+               ON CONFLICT(book_id, character_id) DO UPDATE SET
+                 state_json=excluded.state_json,
+                 updated_chunk=excluded.updated_chunk,
+                 updated_at=excluded.updated_at""",
+            (self.book_id, character_id, state.model_dump_json(),
+             chunk_index, _now()),
+        )
+        self.conn.commit()
+        if old is None or old != state:
+            base = old or VoiceState()
+            delta = {k: round(getattr(state, k) - getattr(base, k), 3)
+                     for k in self._VOICE_STATE_KEYS
+                     if getattr(state, k) != getattr(base, k)}
+            self.append_event("VOICE_STATE_CHANGED", character=character_id,
+                              delta=delta, chunk=chunk_index)
+
+    def add_scene_event(self, chunk_index: int, category: str, description: str,
+                        intensity: float, targets: list[str],
+                        tone: str = "neutral") -> None:
+        """SceneEvent を記録し、Event Log にも流す（3.5Q）。"""
+        self.conn.execute(
+            """INSERT INTO scene_events(book_id, chunk_index, category,
+                                        description, intensity, targets, tone)
+               VALUES(?,?,?,?,?,?,?)""",
+            (self.book_id, chunk_index, category, description,
+             intensity, json.dumps(targets, ensure_ascii=False), tone),
+        )
+        self.conn.commit()
+        self.append_event("SCENE_EVENT", chunk=chunk_index, category=category,
+                          intensity=round(intensity, 3),
+                          targets=targets, tone=tone)
+
+    def scene_tone(self, chunk_index: int) -> str:
+        """チャンクに記録された Scene Tone（無ければ neutral）。"""
+        row = self.conn.execute(
+            """SELECT tone FROM scene_events
+               WHERE book_id=? AND chunk_index=? ORDER BY id DESC LIMIT 1""",
+            (self.book_id, chunk_index),
+        ).fetchone()
+        return str(row["tone"]) if row and row["tone"] else "neutral"
 
     def upsert_relationship(self, src_id: str, dst_id: str, label: str,
                             type_: str = "other") -> None:

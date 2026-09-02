@@ -49,6 +49,7 @@ ANALYSIS_SCHEMA = {
             },
         },
         "scene": {"type": "object"},
+        "scene_events": {"type": "array"},
         "segments": {
             "type": "array",
             "items": {
@@ -117,7 +118,15 @@ class OllamaStoryAnalyzer:
    と intensity(0.0〜1.0) を付ける。
 6. 記憶にある「直近の感情」も考慮して、感情の流れを自然にしてください。
 7. 心の声は text から「（」「）」を取り除いてください。
-8. JSONのみを返却。"""
+8. このチャンクで起きた物語上の出来事を scene_events に列挙（無ければ空配列）。
+   category は arrival/departure/revelation/realization/danger/victory/loss/embarrassment/
+   silence/comedy/confession/betrayal/battle_end/relief のどれか。
+   description は出来事の短い説明、intensity は 0.0〜1.0、
+   targets は影響を受けた人物の id 配列。
+   ※出来事は「誰の状態がどう変化したか」だけを伝え、演技の直接指示はしないこと
+   （状態変化は Engine 側で tension/fatigue/confidence/excitement/fear/anger/sadness/
+   embarrassment のデルタに変換され、以降の演技に反映される）。
+9. JSONのみを返却。"""
 
     def analyze(self, chunk: str, state_summary: str, chunk_index: int) -> dict:
         payload = {

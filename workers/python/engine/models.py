@@ -40,7 +40,35 @@ class VoiceProfile(BaseModel):
     sbv2_model_name: str = "jvnv-M1-jp"  # Style-Bert-VITS2 の model_assets 内ディレクトリ名
     sbv2_model_id: int = 0    # model_name 未指定時のフォールバック
     sbv2_style: str = "Neutral"
+    base_energy: float = 0.8            # 0.5 .. 1.5
+    hesitation: float = 0.0            # 0.0 .. 1.0  (言い出し早さ)
+    pause_tendency: float = 0.0        # 0.0 .. 1.0  (間を取りやすさ)
+    breath_frequency: float = 0.0      # 0.0 .. 1.0  (呼吸の多さ)
+    sentence_end_drop: float = 0.0     # 0.0 .. 1.0  (語尾下げ)
+    emphasis_strength: float = 0.0     # 0.0 .. 1.0  (強調傾向)
+    emotional_reactivity: float = 0.5  # 0.0 .. 1.0  (感情起伍の激しさ)
+    habits: dict[str, str] = Field(default_factory=dict)  # thinking/surprise/disbelief 口頭語
+    timing_habit: float = 0.0      # 0.0 .. 1.0  (response delay / timing癖)
 
+
+
+class VoiceState(BaseModel):
+    """キャラクターの現在の演技状態（可変）。
+
+    tension / fatigue / confidence / excitement はそれぞれ 0.0..1.0。
+    apply_voice_state が time-based prosody curve に変調を加える。
+    Phase 3.5Q: fear / anger / sadness / embarrassment を追加
+    （SceneEvent のデルタ受け口。既存 4 状態と同様に 0.0..1.0、デフォルト 0）。
+    """
+
+    tension: float = 0.0
+    fatigue: float = 0.0
+    confidence: float = 0.0
+    excitement: float = 0.0
+    fear: float = 0.0
+    anger: float = 0.0
+    sadness: float = 0.0
+    embarrassment: float = 0.0
 
 class Relationship(BaseModel):
     """キャラクター src → dst の有向関係。"""
@@ -68,6 +96,7 @@ class Character(BaseModel):
     last_emotion: Optional[str] = None
     last_intensity: Optional[float] = None
     last_chunk: Optional[int] = None
+    voice_state: Optional[VoiceState] = None   # 現在の演技状態（Phase 3.5F）
 
 
 class Dossier(BaseModel):

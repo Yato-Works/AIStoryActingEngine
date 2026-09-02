@@ -21,9 +21,13 @@ from audio import concat_audio, export_m4b, probe_duration
 from director import CastingDirector, NARRATOR, RuleBasedDirector, CharacterAwareDirector
 from jobs import CANCELLED, COMPLETED, FAILED, JobCancelled, JobManager, RUNNING
 from memory import MemoryEngine
-from models import Character, Dossier, Segment, StoryState
+from models import Character, Dossier, Segment, StoryState, VoiceProfile, VoiceState
 from schema import clamp, normalize_emotion, normalize_segment_type, validate_performance_doc
 from tts import get_provider
+from human_voice import render_segment, seed_for
+from voices import NARRATOR_VOICE, NARRATOR_VOICE_INTERNAL
+from scene_context import (SceneReaction, decay_state, scene_events_from_analysis,
+                           tone_for_events)
 
 OUT_DIR = Path(__file__).parent / "output"
 DB_PATH = Path(__file__).parent / "data" / "story.db"
@@ -176,6 +180,43 @@ def _direct_segments(memory: MemoryEngine, state: StoryState,
                   f"({directed.performance.intensity:.2f}, voice={directed.performance.voice})")
 
 
+def _apply_scene_events(memory: MemoryEngine, state: StoryState,
+                        events: list, chunk_index: int) -> None:
+    """SceneEvent -> VoiceState デルタ適用 + 永続化（3.5Q Scene Context Integration）。
+
+    因果は「出来事 → 状態変化 → 以降の演技」。LLM に演技を直接させるのではなく、
+    「誰の状態がどれだけ変わったか」だけを受け取り、既存の Prosody/Breath 機構に委ねる。
+
+    - targets のキャラはフル効果
+    - それ以外は「まず 1 チャンク分の State Decay → 減衰付きの周囲の空気を上乗せ」。
+      こうすると別キャラのイベントチャンクでも、前チャンクまでの状態が自然に回帰する
+    - 変化は voice_states テーブルに永続化 + VOICE_STATE_CHANGED イベントとして記録
+    """
+    tone = tone_for_events(events)
+    for ev in events:
+        memory.add_scene_event(ev.chunk_index or chunk_index, ev.category,
+                               ev.description, ev.intensity, ev.targets, tone)
+    targeted = {cid for ev in events for cid in ev.targets}
+    changed: list[str] = []
+    for cid, _ch in state.characters.items():
+        cur = memory.get_voice_state(cid) or VoiceState()
+        base = cur if cid in targeted else decay_state(cur)
+        new = base
+        for ev in events:
+            new = SceneReaction(ev).for_character(cid, base=new)
+        if new != cur:
+            memory.save_voice_state(cid, new, chunk_index)
+            state.characters[cid].voice_state = new
+            changed.append(cid)
+    if events:
+        summary = ", ".join(
+            f"{ev.category}({ev.intensity:.2f}→{','.join(ev.targets) or '-'})"
+            for ev in events)
+        print(f"     ✓ SCENE_EVENT [{tone}]: {summary}")
+    if changed:
+        print(f"     〜 VoiceState 更新: {', '.join(changed)}")
+
+
 def analyze_book(novel_path: Path, memory: MemoryEngine, resume: bool = False,
                  model: str = "qwen3:4b", should_stop=None) -> None:
     """チャンク解析 → 配役 → 演出まで（Job System の analyze Step の本体）。
@@ -228,6 +269,12 @@ def analyze_book(novel_path: Path, memory: MemoryEngine, resume: bool = False,
         segments = build_segments(analysis, state, chapter, gi, start_no)
         _direct_segments(memory, state, director, rule_director, segments, gi)
 
+        # ---- Scene Context (3.5Q): 出来事 → VoiceState デルタ → 以降の演技へ ----
+        events = scene_events_from_analysis(analysis,
+                                            known_ids=set(state.characters),
+                                            chunk_index=gi)
+        _apply_scene_events(memory, state, events, gi)
+
         memory.mark_chunk_analyzed(gi, chapter)
         memory.append_event("ANALYZE_COMPLETED", chunk_index=gi, chapter=chapter,
                             segments=len(segments))
@@ -246,10 +293,34 @@ def run(novel_path: Path, provider_name: str = "edge", resume: bool = False,
     return memory
 
 
+def _hve_profile_table(memory: MemoryEngine) -> dict[str, tuple[VoiceProfile, VoiceState]]:
+    """HVE（3.5M）用の voice_id → (VoiceProfile, VoiceState) テーブルを組む（Phase 3.5P）。
+
+    キャスティング結果（characters.voice / voice_internal）とナレーター固定声を
+    1 つの辞書に集約する。VoiceState は 3.5Q で永続化された Scene Context 由来の
+    状態を優先し、無ければデフォルトで演じる。
+    """
+    table: dict[str, tuple[VoiceProfile, VoiceState]] = {}
+    state = memory.load_state()
+    for ch in state.characters.values():
+        st = memory.get_voice_state(ch.id) or ch.voice_state or VoiceState()
+        if ch.voice is not None:
+            table[ch.voice.voice_id] = (ch.voice, st)
+        if ch.voice_internal is not None:
+            table[ch.voice_internal.voice_id] = (ch.voice_internal, st)
+    table.setdefault(NARRATOR_VOICE.voice_id, (NARRATOR_VOICE, VoiceState()))
+    table.setdefault(NARRATOR_VOICE_INTERNAL.voice_id,
+                     (NARRATOR_VOICE_INTERNAL, VoiceState()))
+    return table
+
+
 def synthesize_all(memory: MemoryEngine, provider_name: str = "edge",
-                   resume: bool = False, report=None, should_stop=None) -> int:
+                   resume: bool = False, report=None, should_stop=None,
+                   hve: bool = False) -> int:
     """未合成セグメントを TTS（Job System の tts Step の本体）。
 
+    hve=True で Human Voice Engine（3.5M）経由: Performance + VoiceProfile/State +
+    Breath Engine で「演じてから」合成する（出力は常に .wav）。
     report(progress, checkpoint) で 1 セグメントごとに進捗を通知する。
     should_stop() が True を返すと JobCancelled（協調的キャンセル）。
     戻り値は新規合成したセグメント数。done-set（segments.audio_path）が
@@ -259,22 +330,36 @@ def synthesize_all(memory: MemoryEngine, provider_name: str = "edge",
     audio_dir = out_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
     provider = get_provider(provider_name)
+    use_hve = hve
+    _hve_profiles = _hve_profile_table(memory) if use_hve else {}
 
     segments = memory.load_segments()
     done_audio = memory.audio_done() if resume else set()
     todo = [s for s in segments if s.id not in done_audio and s.performance]
-    ext = getattr(provider, "ext", ".mp3")
+    ext = ".wav" if use_hve else getattr(provider, "ext", ".mp3")
+    tone_cache: dict[int, str] = {}  # chunk_index -> scene tone (3.5Q)
     for i, seg in enumerate(todo, 1):
         if should_stop is not None and should_stop():
             raise JobCancelled("tts をキャンセル")
         clip = audio_dir / f"{seg.id}{ext}"
-        provider.synthesize(seg.text, seg.performance, clip)  # type: ignore[arg-type]
+        if use_hve:
+            tone = tone_cache.get(seg.chunk_index)
+            if tone is None:
+                tone = memory.scene_tone(seg.chunk_index)
+                tone_cache[seg.chunk_index] = tone
+            _prof, _st = _hve_profiles.get(
+                seg.performance.voice,
+                (VoiceProfile(voice_id=seg.performance.voice), VoiceState()))
+            render_segment(seg, _prof, _st, provider, clip, seed=seed_for(seg.id),
+                           tone=tone)
+        else:
+            provider.synthesize(seg.text, seg.performance, clip)  # type: ignore[arg-type]
         memory.set_audio(seg.id, str(clip))
-        memory.append_event("AUDIO_GENERATED", segment=seg.id)
+        memory.append_event("AUDIO_GENERATED", segment=seg.id, hve=use_hve)
         if report:
             report(i, {"segment": seg.id})
-    print(f"  🎙 TTS({provider.name}): {len(todo)} セグメント新規合成"
-          f"（DB記録済み {len(done_audio)}）")
+    print(f"  🎙 TTS({provider.name}{' + HVE' if use_hve else ''}): "
+          f"{len(todo)} セグメント新規合成（DB記録済み {len(done_audio)}）")
     return len(todo)
 
 
@@ -319,7 +404,7 @@ def export_audio(memory: MemoryEngine) -> list[tuple[str, str]]:
 
 
 def produce(memory: MemoryEngine, provider_name: str = "edge", resume: bool = False,
-            no_tts: bool = False) -> None:
+            no_tts: bool = False, hve: bool = False) -> None:
     """契約 JSON エクスポート → TTS → 連結（DB が唯一の情報源）。"""
     out_dir = OUT_DIR / memory.book_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -328,13 +413,14 @@ def produce(memory: MemoryEngine, provider_name: str = "edge", resume: bool = Fa
     print(f"  ✓ performance.json / characters.json / story_state.json 保存（{exported} セグメント, 検証OK）")
 
     if not no_tts:
-        synthesize_all(memory, provider_name, resume=resume)
+        synthesize_all(memory, provider_name, resume=resume, hve=hve)
     export_audio(memory)
 
 
 def run_pipeline_job(novel_path: Path, provider_name: str = "edge",
                      resume: bool = False, no_tts: bool = False,
-                     model: str = "qwen3:4b", should_stop=None) -> MemoryEngine:
+                     model: str = "qwen3:4b", hve: bool = False,
+                     should_stop=None) -> MemoryEngine:
     """小説処理を pipeline Job（analyze → tts → export）として実行する（ADR-0003）。
 
     中断・クラッシュ時は `--job --resume` で DB の done-set から再開する。
@@ -346,7 +432,7 @@ def run_pipeline_job(novel_path: Path, provider_name: str = "edge",
     jm = JobManager(memory)
     job_id, resumed = jm.resume_or_create(
         "pipeline", {"provider": provider_name, "model": model,
-                     "novel": str(novel_path), "no_tts": no_tts})
+                     "novel": str(novel_path), "no_tts": no_tts, "hve": hve})
     if resumed:
         recovered = jm.recover_running_steps(job_id)
         print(f"♻ Job {job_id} を再開"
@@ -373,7 +459,8 @@ def run_pipeline_job(novel_path: Path, provider_name: str = "edge",
             jm.run_step(job_id, 2, "tts",
                         lambda report: synthesize_all(memory, provider_name,
                                                       resume=resume, report=report,
-                                                      should_stop=should_stop),
+                                                      should_stop=should_stop,
+                                                      hve=hve),
                         progress_total=memory.count_segments())
         check()
         jm.run_step(job_id, 3, "export",
@@ -457,6 +544,8 @@ def main() -> None:
     ap.add_argument("--resume", action="store_true", help="DB の進捗から再開")
     ap.add_argument("--job", action="store_true",
                     help="Job System 経由で実行（analyze→tts→export を再開可能な Job に）")
+    ap.add_argument("--hve", action="store_true",
+                    help="Human Voice Engine（3.5M）で演技合成：prosody curve + breath で演じる")
     ap.add_argument("--search", metavar="QUERY", help="FTS5 全文検索デモ")
     ap.add_argument("--stats", action="store_true", help="Event Log 統計を表示")
     args = ap.parse_args()
@@ -475,11 +564,12 @@ def main() -> None:
     if args.job:
         memory = run_pipeline_job(args.novel, provider_name=args.provider,
                                   resume=args.resume, no_tts=args.no_tts,
-                                  model=args.model)
+                                  model=args.model, hve=args.hve)
     else:
         memory = run(args.novel, provider_name=args.provider, resume=args.resume,
                      no_tts=args.no_tts, model=args.model)
-        produce(memory, provider_name=args.provider, resume=args.resume, no_tts=args.no_tts)
+        produce(memory, provider_name=args.provider, resume=args.resume,
+                no_tts=args.no_tts, hve=args.hve)
     show_stats(memory)
 
 

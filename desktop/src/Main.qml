@@ -1,23 +1,26 @@
-import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+import QtQuick.Layouts 1.15
+import QtMultimedia 6.0
 
 ApplicationWindow {
     id: root
-    width: 980
-    height: 720
-    visible: true
-    title: "AIStoryActingEngine Desktop (Phase 3B)"
+    width: 1100; height: 780; visible: true
+    title: "AIStoryActingEngine Studio"
+    color: "#faf7f2"
 
-    ListModel { id: booksModel }
-    ListModel { id: stepsModel }
-    ListModel { id: historyModel }
-    ListModel { id: logModel }
-
-    property string currentJobId: ""
+    property string currentPage: "bookshelf"
     property string statusText: "Worker 起動中…"
     property bool workerRunning: false
-    property bool crashed: false
+    property var currentBook: null
+    property int currentChapter: -1
+
+    ListModel { id: booksModel }
+    ListModel { id: logModel }
+    ListModel { id: chaptersModel }
+
+    MediaPlayer { id: audioPlayer; playbackRate: 1.0; audioOutput: audioOut }
+    AudioOutput { id: audioOut; volume: 0.8 }
 
     function jobMark(status) {
         if (status === "completed") return "✓"
@@ -27,302 +30,139 @@ ApplicationWindow {
         if (status === "paused") return "⏸"
         return "○"
     }
+    function bookHue(id) {
+        var s = String(id || ""); var h = 0
+        for (var i = 0; i < s.length; ++i) h = (h * 31 + s.charCodeAt(i)) % 360
+        return h / 360.0
+    }
+    function fmtTime(ms) {
+        var sec = Math.max(0, Math.floor((ms || 0) / 1000))
+        var h = Math.floor(sec / 3600); var m = Math.floor((sec % 3600) / 60); var s = sec % 60
+        var mm = ("0" + m).slice(-2); var ss = ("0" + s).slice(-2)
+        return h > 0 ? h + ":" + mm + ":" + ss : mm + ":" + ss
+    }
+    function toFileUrl(p) {
+        if (!p) return ""
+        var norm = String(p).replace(/\\/g, "/")
+        if (norm.indexOf("://") >= 0) return norm
+        return encodeURI("file:///" + norm)
+    }
+    function openBook(bookId) { statusText = "読み込み中…"; bridge.getBook(bookId) }
+    function loadChapters(book) {
+        chaptersModel.clear()
+        var chs = book.chapters || []
+        for (var i = 0; i < chs.length; ++i) {
+            var chap = book.chapters[i]
+            var off = chap.offset_seconds
+            chaptersModel.append({ title: chap.title || ("Chapter " + chap.chapter), offset: (off === null || off === undefined) ? -1 : Number(off) })
+        }
+    }
+    function updateCurrentChapter() {
+        if (chaptersModel.count === 0) { currentChapter = -1; return }
+        var pos = audioPlayer.position; var idx = -1
+        for (var i = 0; i < chaptersModel.count; ++i) {
+            var o = chaptersModel.get(i).offset
+            if (o >= 0 && o <= pos) idx = i
+        }
+        currentChapter = idx
+    }
 
+
+    // ---- connections ----
     Connections {
         target: bridge
-        function onRunningChanged(running) {
-            workerRunning = running
-            statusText = running ? "Worker 接続済み" : "Worker 停止"
-            if (running) {
-                crashed = false
-                bridge.ping()
-                bridge.listJobs(20)
-            }
-        }
-        function onPingResult(ok) {
-            statusText = ok ? "Worker 応答 OK" : "Worker 応答なし"
-        }
+        function onRunningChanged(running) { workerRunning = running }
         function onBooksLoaded(books) {
             booksModel.clear()
-            for (var i = 0; i < books.length; ++i)
-                booksModel.append(books[i])
+            for (var i = 0; i < books.length; ++i) booksModel.append(books[i])
         }
-        function onJobStarted(jobId, bookId) {
-            currentJobId = jobId
-            statusText = "ジョブ開始: " + bookId
-            stepsModel.clear()
-            bridge.listJobs(20)
-        }
-        function onJobLoaded(job, polled) {
-            if (job.id !== currentJobId)
-                return
-            stepsModel.clear()
-            var steps = job.steps || []
-            for (var s = 0; s < steps.length; ++s) {
-                var st = steps[s]
-                stepsModel.append({
-                    name: st.name,
-                    status: st.status,
-                    progress: st.progress,
-                    total: st.progress_total,
-                    checkpoint: st.checkpoint ? JSON.stringify(st.checkpoint) : ""
-                })
+        function onBookLoaded(book) {
+            currentBook = book
+            if (book && book.ok !== false) {
+                loadChapters(book)
+                var url = toFileUrl(book.audio_path || "")
+                if (url) { audioPlayer.source = url; audioPlayer.play() }
+                currentPage = "player"
+                statusText = "再生中: " + book.title
             }
-            if (job.status === "completed")
-                statusText = "✅ Job 完了: " + (job.book_id || "")
-            else if (job.status === "failed")
-                statusText = "❌ Job 失敗: " + (job.error || "")
-            else if (job.status === "cancelled")
-                statusText = "🛑 キャンセル済み（Resume で続きから）"
-            else if (job.status === "paused")
-                statusText = "⏸ 一時停止中"
-            else
-                statusText = "実行中…"
-        }
-        function onJobCancelRequested(jobId) {
-            statusText = "キャンセル要求送信…"
-        }
-        function onJobPauseRequested(jobId) {
-            statusText = "一時停止要求送信…"
-        }
-        function onJobResumed(jobId) {
-            currentJobId = jobId
-            statusText = "再開: " + jobId
-        }
-
-    ColumnLayout {
-        anchors.fill: parent
-        anchors.margins: 10
-        spacing: 8
-
-        // ---- ヘッダ ----
-        RowLayout {
-            Layout.fillWidth: true
-            Label { text: "AIStoryActingEngine"; font.bold: true; font.pixelSize: 18 }
-            Item { Layout.fillWidth: true }
-            Rectangle {
-                width: 10; height: 10; radius: 5
-                color: workerRunning ? "#3ddc84" : "#e53935"
-            }
-            Label { text: statusText; color: "#555" }
-        }
-
-        // ---- クラッシュ復旧バナー ----
-        Rectangle {
-            visible: crashed
-            Layout.fillWidth: true
-            color: "#fff3e0"
-            radius: 6
-            height: 44
-            RowLayout {
-                anchors.fill: parent
-                anchors.margins: 8
-                spacing: 10
-                Label {
-                    Layout.fillWidth: true
-                    text: "Worker が異常終了しました。未完了の Job は DB に記録されています。"
-                    color: "#bf360c"
-                    wrapMode: Text.WrapAnywhere
-                }
-                Button {
-                    text: "⟳ 再起動"
-                    onClicked: bridge.restart()
-                }
-            }
-        }
-
-        // ---- Job 実行パネル ----
-        GroupBox {
-            title: "実行"
-            Layout.fillWidth: true
-            ColumnLayout {
-                anchors.fill: parent
-                spacing: 6
-                RowLayout {
-                    Layout.fillWidth: true
-                    Label { text: "小説パス" }
-                    TextField {
-                        id: novelField
-                        Layout.fillWidth: true
-                        text: "../../../samples/sample_novel_long.txt"
-                    }
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    Label { text: "TTS" }
-                    ComboBox { id: providerBox; model: ["edge", "sbv2", "aivis"] }
-                    CheckBox { id: resumeBox; text: "resume"; checked: true }
-                    CheckBox { id: noTtsBox; text: "no-tts" }
-                    Item { Layout.fillWidth: true }
-                    Button {
-                        text: "▶ 開始"
-                        enabled: workerRunning
-                        onClicked: {
-                            stepsModel.clear()
-                            bridge.startJob(novelField.text, providerBox.currentText,
-                                            resumeBox.checked, noTtsBox.checked)
-                        }
-                    }
-                    Button {
-                        text: "⏸ 一時停止"
-                        enabled: currentJobId !== "" && workerRunning
-                        onClicked: bridge.pauseJob(currentJobId)
-                    }
-                    Button {
-                        text: "⏵ 再開"
-                        enabled: currentJobId !== "" && workerRunning
-                        onClicked: bridge.resumeJob(currentJobId)
-                    }
-                    Button {
-                        text: "⏹ キャンセル"
-                        enabled: currentJobId !== "" && workerRunning
-                        onClicked: bridge.cancelJob(currentJobId)
-                    }
-                }
-            }
-        }
-
-        function onJobsLoaded(jobs) {
-            historyModel.clear()
-            for (var i = 0; i < jobs.length; ++i) {
-                var j = jobs[i]
-                historyModel.append({
-                    jid: j.id,
-                    bookId: j.book_id || "?",
-                    status: j.status,
-                    mark: jobMark(j.status),
-                    updated: (j.updated_at || "").replace("T", " ")
-                })
-            }
-        }
-        function onWorkerCrashed() {
-            crashed = true
-            statusText = "💀 Worker が落ちました — 再起動ボタンで復旧できます"
-            bridge.listJobs(20)
         }
         function onErrorOccurred(code, message) {
-            statusText = "⚠ RPC エラー(" + code + "): " + message
+            logModel.append({t: fmtTime(0), msg: "Error " + code + ": " + message})
+            statusText = "エラー: " + message
         }
-        function onLogMessage(line) {
-            logModel.insert(0, { text: line })
-            if (logModel.count > 200)
-                logModel.remove(200, logModel.count - 200)
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            spacing: 8
-
-            // ---- 進行（Step ごとのプログレス） ----
-            GroupBox {
-                title: "進行"
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                ListView {
-                    anchors.fill: parent
-                    model: stepsModel
-                    clip: true
-                    delegate: RowLayout {
-                        width: parent.width
-                        spacing: 8
-                        Text { text: model.name; font.bold: true; Layout.preferredWidth: 80 }
-                        Text {
-                            text: model.status === "completed" ? "✓" :
-                                  model.status === "failed" ? "✗" :
-                                  model.status === "running" ? "▶" : "○"
-                            color: model.status === "completed" ? "#2e7d32" :
-                                   model.status === "failed" ? "#c62828" :
-                                   model.status === "running" ? "#1565c0" : "#888"
-                            Layout.preferredWidth: 20
-                        }
-                        ProgressBar {
-                            Layout.fillWidth: true
-                            from: 0; to: Math.max(1, model.total)
-                            value: model.progress
-                        }
-                        Text {
-                            text: model.total > 0 ? (model.progress + "/" + model.total) : ""
-                            color: "#666"
-                            Layout.preferredWidth: 56
-                        }
-                        Text {
-                            text: model.checkpoint
-                            color: "#999"; elide: Text.ElideRight
-                            Layout.preferredWidth: 140
-                        }
-                    }
-                }
-            }
-
+        function onLogMessage(line) { logModel.append({t: new Date().toLocaleTimeString(), msg: line}) }
     }
 
+    // ---- pages ----
+    StackLayout {
+        anchors.fill: parent; anchors.margins: 8
+        currentIndex: currentPage === "bookshelf" ? 0 : (currentPage === "player" ? 1 : 2)
 
-            // ---- Job History ----
-            GroupBox {
-                title: "Job History"
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                ListView {
-                    anchors.fill: parent
-                    model: historyModel
-                    clip: true
-                    delegate: RowLayout {
-                        width: parent.width
-                        spacing: 6
-                        Text {
-                            text: model.mark
-                            color: model.status === "completed" ? "#2e7d32" :
-                                   model.status === "failed" ? "#c62828" :
-                                   model.status === "running" ? "#1565c0" : "#888"
-                            Layout.preferredWidth: 18
-                        }
-                        Text {
-                            text: model.bookId
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
-                        }
-                        Text {
-                            text: model.status
-                            color: "#666"
-                            Layout.preferredWidth: 80
-                        }
-                        Button {
-                            text: "↺"
-                            visible: model.status === "failed" ||
-                                     model.status === "cancelled" ||
-                                     model.status === "paused"
-                            enabled: workerRunning
-                            onClicked: {
-                                currentJobId = model.jid
-                                bridge.resumeJob(model.jid)
-                            }
-                        }
+        // BOOKSHELF
+        Page {
+            GridView {
+                anchors.fill: parent; clip: true; model: booksModel
+                cellWidth: 180; cellHeight: 270
+                delegate: Rectangle {
+                    width: 180; height: 270; radius: 10
+                    color: Qt.hsla(bookHue(model.book_id), 0.55, 0.92, 1)
+                    border.color: "#ddd"
+                    Column {
+                        anchors.centerIn: parent; width: 160; spacing: 6
+                        Image { source: toFileUrl(model.cover_url) || ""; width: 120; height: 160; anchors.horizontalCenter: parent.horizontalCenter; fillMode: Image.PreserveAspectFit }
+                        Text { text: model.title || "(untitled)"; font.pixelSize: 14; width: parent.width; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter }
+                        Text { text: model.author || ""; color: "#666"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; width: parent.width }
+                        Text { text: model.voice_profile || ""; color: "#888"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; width: parent.width }
                     }
+                    MouseArea { anchors.fill: parent; onClicked: openBook(model.book_id) }
                 }
             }
         }
 
-
-        // ---- ログ ----
-        GroupBox {
-            title: "ログ"
-            Layout.fillWidth: true
-            Layout.preferredHeight: 140
-            ListView {
-                anchors.fill: parent
-                model: logModel
-                clip: true
-                delegate: Text {
-                    text: model.text
-                    font.family: "Consolas"
-                    font.pixelSize: 11
-                    color: "#333"
-                    wrapMode: Text.WrapAnywhere
+        // PLAYER
+        Page {
+            ColumnLayout {
+                anchors.centerIn: parent; spacing: 16
+                Text { text: currentBook ? currentBook.title : "No book"; font.pixelSize: 22; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
+                Text { text: currentBook ? "by " + currentBook.author : ""; color: "#777"; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter }
+                Slider { id: seek; Layout.fillWidth: true; from: 0; to: Math.max(1, audioPlayer.duration); value: audioPlayer.position || 0; onMoved: audioPlayer.setPosition(value) }
+                Row {
+                    spacing: 10; anchors.horizontalCenter: parent.horizontalCenter
+                    Button { text: audioPlayer.playbackState === MediaPlayer.PlayingState ? "⏸" : "▶"; onClicked: { if (audioPlayer.playbackState === MediaPlayer.PlayingState) audioPlayer.pause(); else audioPlayer.play() } }
+                    Button { text: "⏮"; onClicked: audioPlayer.setPosition(0) }
+                    Text { text: fmtTime(audioPlayer.position) + " / " + fmtTime(audioPlayer.duration); color: "#555"; font.pixelSize: 13 }
                 }
+                Button { text: "⇱ Bookshelf"; Layout.fillWidth: true; onClicked: currentPage = "bookshelf" }
+                Button { text: "🎙 Studio"; Layout.fillWidth: true; onClicked: currentPage = "studio" }
+            }
+        }
+
+        // STUDIO
+        Page {
+            id: studioPage
+            readonly property var bk: currentBook || {}
+            readonly property var jd: bk.judge || {}
+            Column {
+                anchors.fill: parent; anchors.margins: 24; spacing: 12
+                Text { text: "🎙 Studio"; font.pixelSize: 22 }
+                Rectangle {
+                    width: parent.width; height: 200; radius: 8; color: "#fff"; border.color: "#ddd"
+                    Column {
+                        anchors.fill: parent; anchors.margins: 12; spacing: 6
+                        Text { text: "Title: " + (studioPage.bk.title || "(none)") }
+                        Text { text: "State Delta: " + JSON.stringify(studioPage.bk.state_delta || {}) }
+                        Text { text: "Voice Profile: " + JSON.stringify(studioPage.bk.voice_profile || {}) }
+                        Text { text: "Performance Plan: " + JSON.stringify(studioPage.bk.performance_plan || {}) }
+                        Text { text: "Judge: " + (studioPage.jd.score !== undefined ? studioPage.jd.score : "n/a") + " / " + JSON.stringify(studioPage.jd.feedback || {}) }
+                        Text { text: "Audio Metrics: " + JSON.stringify(studioPage.bk.audio_metrics || {}) }
+                    }
+                }
+                Button { text: "⇱ Player"; onClicked: currentPage = "player" }
             }
         }
     }
 
-    onClosing: bridge.shutdown()
+    Text { anchors.bottom: parent.bottom; anchors.left: parent.left; anchors.margins: 8; text: statusText; color: "#666"; font.pixelSize: 12 }
+
+    Component.onCompleted: { bridge.listBooks(); statusText = "Ready" }
 }

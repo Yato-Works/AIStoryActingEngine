@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
@@ -100,7 +102,7 @@ Page {
                     contentItem: RowLayout {
                         spacing: 12
                         Rectangle {
-                            width: 34; height: 34; radius: 17
+                            Layout.preferredWidth: 34; Layout.preferredHeight: 34; radius: 17
                             color: "#333333"
                             Text { anchors.centerIn: parent; text: model.chapter; color: "#cccccc"; font.pixelSize: 13 }
                         }

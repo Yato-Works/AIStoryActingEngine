@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
@@ -10,6 +12,7 @@ Page {
     signal previewRequested(string text, string voiceId, string style, real pitch, real pace, string provider)
     signal saveRequested(var profile)
     signal deleteRequested(string voiceId)
+    signal refreshRequested()
 
     background: Rectangle { color: "#121212" }
 
@@ -24,7 +27,7 @@ Page {
             Button {
                 text: "⟳ ボイス一覧更新"
                 flat: true
-                onClicked: bridge.listVoiceProfiles()
+                onClicked: page.refreshRequested()
             }
         }
     }
@@ -256,6 +259,9 @@ Page {
                 ScrollBar.vertical: ScrollBar { }
 
                 delegate: Rectangle {
+                    id: voiceCard
+                    required property var model   // ListView delegate: 各行のモデルデータが注入される
+                    property var cast: model   // delegate モデルの安定参照
                     width: voiceList.width
                     height: 84
                     radius: 10
@@ -268,11 +274,11 @@ Page {
 
                         // アイコンバッジ
                         Rectangle {
-                            width: 46; height: 46; radius: 23
-                            color: model.source === "user" ? "#9c27b0" : "#2a5298"
+                            Layout.preferredWidth: 46; Layout.preferredHeight: 46; radius: 23
+                            color: voiceCard.cast.source === "user" ? "#9c27b0" : "#2a5298"
                             Text {
                                 anchors.centerIn: parent
-                                text: model.gender === "female" ? "♀" : "♂"
+                                text: voiceCard.cast.gender === "female" ? "♀" : "♂"
                                 color: "#ffffff"; font.pixelSize: 20; font.bold: true
                             }
                         }
@@ -283,30 +289,30 @@ Page {
                             RowLayout {
                                 spacing: 8
                                 Text {
-                                    text: model.label || model.voice_id
+                                    text: voiceCard.cast.label || voiceCard.cast.voice_id
                                     color: "#ffffff"; font.pixelSize: 15; font.bold: true
                                 }
                                 Rectangle {
                                     radius: 4
-                                    color: model.source === "user" ? "#4a148c" : "#1a365d"
+                                    color: voiceCard.cast.source === "user" ? "#4a148c" : "#1a365d"
                                     implicitWidth: sourceTxt.implicitWidth + 8
                                     implicitHeight: sourceTxt.implicitHeight + 4
                                     Text {
                                         id: sourceTxt
                                         anchors.centerIn: parent
-                                        text: model.source === "user" ? "カスタム" : "公式"
+                                        text: voiceCard.cast.source === "user" ? "カスタム" : "公式"
                                         color: "#cccccc"; font.pixelSize: 10
                                     }
                                 }
                             }
                             Text {
-                                text: "pitch: " + (model.base_pitch >= 0 ? "+" : "") + (model.base_pitch || 0).toFixed(2)
-                                      + "  |  speed: " + (model.base_pace || 1.0).toFixed(2) + "x"
-                                      + "  |  年代: " + (model.age || "adult")
+                                text: "pitch: " + (voiceCard.cast.base_pitch >= 0 ? "+" : "") + (voiceCard.cast.base_pitch || 0).toFixed(2)
+                                      + "  |  speed: " + (voiceCard.cast.base_pace || 1.0).toFixed(2) + "x"
+                                      + "  |  年代: " + (voiceCard.cast.age || "adult")
                                 color: "#888888"; font.pixelSize: 11
                             }
                             Text {
-                                text: (model.tags && model.tags.length > 0) ? "タグ: " + model.tags.join(", ") : ""
+                                text: (voiceCard.cast.tags && voiceCard.cast.tags.length > 0) ? "タグ: " + voiceCard.cast.tags.join(", ") : ""
                                 color: page.accent; font.pixelSize: 11; elide: Text.ElideRight
                                 Layout.fillWidth: true
                             }
@@ -319,19 +325,19 @@ Page {
                             onClicked: {
                                 page.previewRequested(
                                     "私の声はどうですか？",
-                                    model.voice_id,
-                                    model.sbv2_style || "Neutral",
-                                    model.base_pitch || 0.0,
-                                    model.base_pace || 1.0,
+                                    voiceCard.cast.voice_id,
+                                    voiceCard.cast.sbv2_style || "Neutral",
+                                    voiceCard.cast.base_pitch || 0.0,
+                                    voiceCard.cast.base_pace || 1.0,
                                     "edge"
                                 )
                             }
                         }
                         Button {
-                            visible: model.source === "user"
+                            visible: voiceCard.cast.source === "user"
                             text: "🗑"
                             flat: true
-                            onClicked: page.deleteRequested(model.voice_id)
+                            onClicked: page.deleteRequested(voiceCard.cast.voice_id)
                         }
                     }
                 }

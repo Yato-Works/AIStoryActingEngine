@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
@@ -17,6 +19,7 @@ ApplicationWindow {
     property var currentBook: null
     property string statusText: "Worker 起動中…"
     property bool workerRunning: false
+    property string currentSeriesId: ""  // 選択中書籍のシリーズ（キャスティング参照用）
 
     ListModel { id: booksModel }
     ListModel { id: chaptersModel }
@@ -78,6 +81,7 @@ ApplicationWindow {
         function onCastingsLoaded(castings, seriesId) {
             castingsModel.clear()
             for (var i = 0; i < castings.length; ++i) castingsModel.append(castings[i])
+            root.currentSeriesId = seriesId || ""
         }
         function onVoiceProfileSaved(voiceId) {
             root.statusText = "✓ ボイス保存完了: " + voiceId
@@ -146,7 +150,7 @@ ApplicationWindow {
                 RowLayout {
                     spacing: 6; Layout.leftMargin: 8
                     Rectangle {
-                        width: 9; height: 9; radius: 4
+                        Layout.preferredWidth: 9; Layout.preferredHeight: 9; radius: 4
                         color: root.workerRunning ? root.cAccent : "#e05555"
                     }
                     Text {
@@ -185,6 +189,7 @@ ApplicationWindow {
                 }
                 CastingPage {
                     book: root.currentBook
+                    seriesId: root.currentSeriesId
                     castings: castingsModel
                     voiceProfiles: voiceProfilesModel
                     accent: root.cAccent
@@ -199,6 +204,7 @@ ApplicationWindow {
                 VoiceStudioPage {
                     voiceProfiles: voiceProfilesModel
                     accent: root.cAccent
+                    onRefreshRequested: () => bridge.listVoiceProfiles()
                     onSaveRequested: (prof) => bridge.saveVoiceProfile(prof)
                     onDeleteRequested: (vid) => bridge.deleteVoiceProfile(vid)
                     onPreviewRequested: (txt, vid, sty, pit, pac, prov) => {

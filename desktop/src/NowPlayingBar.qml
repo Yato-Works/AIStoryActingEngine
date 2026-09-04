@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
@@ -36,7 +38,7 @@ Control {
         RowLayout {
             Layout.preferredWidth: 270; spacing: 12
             Rectangle {
-                width: 58; height: 58; radius: 8
+                Layout.preferredWidth: 58; Layout.preferredHeight: 58; radius: 8
                 gradient: Gradient {
                     GradientStop { position: 0; color: Qt.hsla(bar.hue(bar.book ? bar.book.id : ""), 0.42, 0.40) }
                     GradientStop { position: 1; color: Qt.hsla(bar.hue(bar.book ? bar.book.id : ""), 0.50, 0.16) }

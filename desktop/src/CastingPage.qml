@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
@@ -67,7 +69,8 @@ Page {
 
             delegate: Rectangle {
                 id: charCard
-                property var cast: model   // 委譲モデルを保持（ComboBox の model プロパティによるシャドーイング対策）
+                required property var model   // ListView delegate: 各行のモデルデータが注入される
+                property var cast: model   // ComboBox の model プロパティによるスコープ汚染を避ける安定参照
                 width: castingList.width
                 height: cardCol.implicitHeight + 28
                 radius: 12
@@ -84,11 +87,11 @@ Page {
                         spacing: 12; Layout.fillWidth: true
 
                         Rectangle {
-                            width: 38; height: 38; radius: 19
-                            color: model.gender === "female" ? "#e91e63" : "#2196f3"
+                            Layout.preferredWidth: 38; Layout.preferredHeight: 38; radius: 19
+                            color: charCard.cast.gender === "female" ? "#e91e63" : "#2196f3"
                             Text {
                                 anchors.centerIn: parent
-                                text: (model.name || "?").charAt(0)
+                                text: (charCard.cast.name || "?").charAt(0)
                                 color: "#ffffff"; font.pixelSize: 18; font.bold: true
                             }
                         }
@@ -98,29 +101,29 @@ Page {
                             RowLayout {
                                 spacing: 8
                                 Text {
-                                    text: model.name || model.character_id
+                                    text: charCard.cast.name || charCard.cast.character_id
                                     color: "#ffffff"; font.pixelSize: 16; font.bold: true
                                 }
                                 Text {
-                                    text: "(" + (model.gender || "unknown") + ", " + (model.age || "adult") + ")"
+                                    text: "(" + (charCard.cast.gender || "unknown") + ", " + (charCard.cast.age || "adult") + ")"
                                     color: "#888888"; font.pixelSize: 12
                                 }
                                 Rectangle {
-                                    visible: Boolean(model.role)
+                                    visible: Boolean(charCard.cast.role)
                                     radius: 4; color: "#333333"
                                     implicitWidth: roleTxt.implicitWidth + 8
                                     implicitHeight: roleTxt.implicitHeight + 4
                                     Text {
                                         id: roleTxt
                                         anchors.centerIn: parent
-                                        text: model.role || ""
+                                        text: charCard.cast.role || ""
                                         color: "#cccccc"; font.pixelSize: 11
                                     }
                                 }
                             }
                             Text {
-                                text: (model.personality && model.personality.length > 0)
-                                      ? "性格: " + model.personality.join(", ") : ""
+                                text: (charCard.cast.personality && charCard.cast.personality.length > 0)
+                                      ? "性格: " + charCard.cast.personality.join(", ") : ""
                                 color: "#a0a0a0"; font.pixelSize: 11
                             }
                         }
@@ -128,11 +131,11 @@ Page {
                         CheckBox {
                             id: lockCheck
                             text: "🔒 配役を固定"
-                            checked: Boolean(model.is_locked)
+                            checked: Boolean(charCard.cast.is_locked)
                         }
                     }
 
-                    Rectangle { Layout.fillWidth: true; height: 1; color: "#2c2c2c" }
+                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#2c2c2c" }
 
                     // ボイス割当選択列
                     RowLayout {
@@ -190,19 +193,19 @@ Page {
                                     text: "▶ 試聴"
                                     flat: true
                                     onClicked: {
-                                        var vid = extCombo.currentValue || model.voice_id
-                                        page.previewRequested("私、" + (model.name || "キャラクター") + "の声です。", vid)
+                                        var vid = extCombo.currentValue || charCard.cast.voice_id
+                                        page.previewRequested("私、" + (charCard.cast.name || "キャラクター") + "の声です。", vid)
                                     }
                                 }
                                 Button {
                                     text: "適用"
                                     highlighted: true
                                     onClicked: {
-                                        var vExt = extCombo.currentValue || model.voice_id
-                                        var vInt = intCombo.currentValue || model.voice_internal_id || (vExt + "i")
+                                        var vExt = extCombo.currentValue || charCard.cast.voice_id
+                                        var vInt = intCombo.currentValue || charCard.cast.voice_internal_id || (vExt + "i")
                                         page.assignRequested(
                                             page.book.id,
-                                            model.character_id,
+                                            charCard.cast.character_id,
                                             vExt,
                                             vInt,
                                             lockCheck.checked

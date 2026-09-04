@@ -191,3 +191,47 @@ def test_worker_rpc_methods(tmp_db):
 
     s_list = worker.dispatch("list_series", {})
     assert any(s["id"] == "series_test_01" for s in s_list["series"])
+
+
+def test_llm_casting_with_assert(tmp_db):
+    """suggest（LLMキャスティング提案）が正しく採用され、不正提案・提案なしでフォールバックすることを assert で検証。
+
+    test_phase2_extra.py の同名テスト（check() ベース）は失敗を握りつぶすため、
+    例外で失敗する assert ベースの回帰テストとして追加する。
+    """
+    mem, db_file = tmp_db
+
+    def good_suggest(profile):
+        return {
+            "external": {"voice_id": "voice_03", "pitch": -0.05, "pace": 0.9},
+            "internal": {"voice_id": "voice_04i", "pitch": -0.2, "pace": 0.85},
+        }
+
+    state = StoryState()
+    state.characters["saki"] = Character(
+        id="saki", name="紗希", gender="female", age="elder", role="side")
+    assigned = CastingDirector().assign_voices(state, suggest=good_suggest, memory=mem)
+    assert "saki" in assigned
+    assert state.characters["saki"].voice.voice_id == "voice_03"
+    assert state.characters["saki"].voice.base_pitch == pytest.approx(-0.05)
+    assert state.characters["saki"].voice_internal.voice_id == "voice_04i"
+    assert state.characters["saki"].voice_internal.base_pitch == pytest.approx(-0.2)
+
+    # 不正な提案（存在しない voice_id）は自動マッチングへフォールバック
+    def bad_suggest(profile):
+        return {"external": {"voice_id": "voice_99"}}
+
+    state2 = StoryState()
+    state2.characters["ken"] = Character(
+        id="ken", name="賢人", gender="male", age="young")
+    CastingDirector().assign_voices(state2, suggest=bad_suggest)
+    assert state2.characters["ken"].voice.voice_id == "voice_01"
+    assert state2.characters["ken"].voice_internal is not None
+
+    # suggest なし（実運用のメイン経路）でもルール/タグマッチで割り当てられる
+    state3 = StoryState()
+    state3.characters["mio"] = Character(
+        id="mio", name="澪", gender="female", age="young")
+    CastingDirector().assign_voices(state3)
+    assert state3.characters["mio"].voice.gender == "female"
+    assert state3.characters["mio"].voice_internal is not None

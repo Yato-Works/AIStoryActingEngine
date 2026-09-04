@@ -25,7 +25,7 @@ from models import Character, Dossier, Segment, StoryState, VoiceProfile, VoiceS
 from schema import clamp, normalize_emotion, normalize_segment_type, validate_performance_doc
 from tts import get_provider
 from human_voice import render_segment, seed_for
-from voices import NARRATOR_VOICE, NARRATOR_VOICE_INTERNAL
+from voices import NARRATOR_VOICE, NARRATOR_VOICE_INTERNAL, sync_builtin_voices
 from scene_context import (SceneReaction, decay_state, scene_events_from_analysis,
                            tone_for_events)
 
@@ -111,7 +111,7 @@ def _persist_relationships(memory: MemoryEngine, state: StoryState,
 def _cast_characters(memory: MemoryEngine, state: StoryState,
                      casting: CastingDirector, analyzer, chunk_index: int) -> None:
     """未配役キャラに External/Internal の声を割り当てて永続化する。"""
-    newly_cast = casting.assign_voices(state, suggest=analyzer.suggest_voice)
+    newly_cast = casting.assign_voices(state, suggest=analyzer.suggest_voice, memory=memory)
     for cid in newly_cast:
         ch = state.characters[cid]
         memory.save_voice_profile(ch)
@@ -228,6 +228,7 @@ def analyze_book(novel_path: Path, memory: MemoryEngine, resume: bool = False,
     director = CharacterAwareDirector()
     rule_director = RuleBasedDirector()  # narrator 等のフォールバック用
     casting = CastingDirector()
+    sync_builtin_voices(memory)
 
     memory.append_event("BOOK_IMPORTED", source=str(novel_path), chars=len(text))
 

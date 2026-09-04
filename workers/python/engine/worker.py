@@ -36,6 +36,9 @@ from pathlib import Path
 
 import main as engine
 from memory import MemoryEngine, _fts_query
+from models import CharacterCasting, Performance, Series, VoiceProfile
+from voices import resolve_voice_profile, sync_builtin_voices, _internal_of
+from tts import get_provider
 
 PROTOCOL_VERSION = "aiae.worker/1"
 
@@ -147,7 +150,10 @@ class EngineWorker:
         return {"protocol": PROTOCOL_VERSION,
                 "methods": ["initialize", "ping", "list_books", "get_book",
                             "get_events", "search", "start_job", "get_job",
-                            "cancel_job", "pause_job", "resume_job", "list_jobs"],
+                            "cancel_job", "pause_job", "resume_job", "list_jobs",
+                            "list_voice_profiles", "save_voice_profile", "delete_voice_profile",
+                            "get_castings", "assign_casting", "list_series", "upsert_series",
+                            "assign_book_to_series", "preview_voice", "import_document"],
                 "db": str(self.db_path)}
 
     def rpc_ping(self) -> dict:
@@ -423,6 +429,183 @@ class EngineWorker:
             return {"jobs": jobs}
         finally:
             conn.close()
+
+    # ------------------------------------------------------------ Dynamic Voices & Castings & Series
+
+    def rpc_list_voice_profiles(self, gender: str | None = None, source: str | None = None) -> dict:
+        mem = MemoryEngine(self.db_path, "_global")
+        try:
+            sync_builtin_voices(mem)
+            profiles = mem.list_voice_profiles(gender=gender, source=source)
+            return {"profiles": [p.model_dump() for p in profiles]}
+        finally:
+            mem.close()
+
+    def rpc_save_voice_profile(self, profile: dict) -> dict:
+        p = VoiceProfile.model_validate(profile)
+        p.source = "user" if p.source != "cloned" else "cloned"
+        mem = MemoryEngine(self.db_path, "_global")
+        try:
+            mem.register_voice_profile(p)
+            return {"ok": True, "voice_id": p.voice_id}
+        finally:
+            mem.close()
+
+    def rpc_delete_voice_profile(self, voice_id: str) -> dict:
+        mem = MemoryEngine(self.db_path, "_global")
+        try:
+            success = mem.delete_voice_profile(voice_id)
+            if not success:
+                raise _WorkerError(INVALID_PARAMS, f"cannot delete builtin or nonexistent voice: {voice_id}")
+            return {"ok": True, "deleted": voice_id}
+        finally:
+            mem.close()
+
+    def rpc_get_castings(self, book_id: str) -> dict:
+        book_id = str(book_id)
+        mem = MemoryEngine(self.db_path, book_id)
+        try:
+            conn = self._connect()
+            try:
+                chars = _rowdicts(
+                    conn,
+                    """SELECT id, name, gender, age, role, traits, personality, speech_style, voice_json, voice_internal_json
+                       FROM characters WHERE book_id=? ORDER BY first_chunk, id""",
+                    (book_id,))
+            finally:
+                conn.close()
+
+            castings_map = {c.character_id: c for c in mem.get_character_castings(book_id)}
+            result = []
+            for ch in chars:
+                cid = ch["id"]
+                c_obj = castings_map.get(cid)
+                v_ext = None
+                v_int = None
+                if c_obj:
+                    v_ext = c_obj.voice_id
+                    v_int = c_obj.voice_internal_id
+                elif ch["voice_json"]:
+                    v_ext = json.loads(ch["voice_json"]).get("voice_id")
+                    if ch["voice_internal_json"]:
+                        v_int = json.loads(ch["voice_internal_json"]).get("voice_id")
+                result.append({
+                    "character_id": cid,
+                    "name": ch["name"],
+                    "gender": ch["gender"],
+                    "age": ch["age"],
+                    "role": ch["role"],
+                    "personality": json.loads(ch["personality"] or "[]"),
+                    "voice_id": v_ext or "",
+                    "voice_internal_id": v_int or "",
+                    "is_locked": bool(c_obj and c_obj.is_locked),
+                    "notes": c_obj.notes if c_obj else "",
+                })
+            series_id = mem.get_book_series_id(book_id)
+            return {"book_id": book_id, "series_id": series_id, "castings": result}
+        finally:
+            mem.close()
+
+    def rpc_assign_casting(self, book_id: str, character_id: str,
+                           voice_id: str, voice_internal_id: str | None = None,
+                           is_locked: bool = True, notes: str = "") -> dict:
+        book_id = str(book_id)
+        character_id = str(character_id)
+        mem = MemoryEngine(self.db_path, book_id)
+        try:
+            # 1. character_castings テーブルに保存
+            casting = CharacterCasting(
+                character_id=character_id,
+                character_name="",
+                voice_id=voice_id,
+                voice_internal_id=voice_internal_id or (voice_id + "i"),
+                is_locked=is_locked,
+                notes=notes,
+            )
+            mem.set_character_casting(casting, book_id=book_id)
+
+            # 2. characters テーブルの voice_json, voice_internal_json も更新
+            ext_p = resolve_voice_profile(voice_id, mem)
+            int_p = resolve_voice_profile(voice_internal_id or (voice_id + "i"), mem)
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """UPDATE characters
+                       SET voice_json=?, voice_internal_json=?
+                       WHERE book_id=? AND id=?""",
+                    (ext_p.model_dump_json(), int_p.model_dump_json(), book_id, character_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            mem.append_event("VOICE_ASSIGNED", character=character_id,
+                             voice=voice_id, voice_internal=int_p.voice_id,
+                             user_assigned=True)
+            return {"ok": True, "book_id": book_id, "character_id": character_id,
+                    "voice_id": voice_id, "voice_internal_id": int_p.voice_id}
+        finally:
+            mem.close()
+
+    def rpc_list_series(self) -> dict:
+        mem = MemoryEngine(self.db_path, "_global")
+        try:
+            return {"series": [s.model_dump() for s in mem.list_series()]}
+        finally:
+            mem.close()
+
+    def rpc_upsert_series(self, series: dict) -> dict:
+        s = Series.model_validate(series)
+        mem = MemoryEngine(self.db_path, "_global")
+        try:
+            mem.upsert_series(s)
+            return {"ok": True, "series_id": s.id}
+        finally:
+            mem.close()
+
+    def rpc_assign_book_to_series(self, book_id: str, series_id: str | None) -> dict:
+        mem = MemoryEngine(self.db_path, book_id)
+        try:
+            mem.set_book_series(book_id, series_id)
+            return {"ok": True, "book_id": book_id, "series_id": series_id}
+        finally:
+            mem.close()
+
+    def rpc_preview_voice(self, text: str, voice_id: str,
+                          style: str = "Neutral", pitch: float = 0.0,
+                          pace: float = 1.0, provider: str = "edge") -> dict:
+        text = str(text or "こんにちは。私の声を聴いてみてください。")
+        mem = MemoryEngine(self.db_path, "_preview")
+        try:
+            profile = resolve_voice_profile(voice_id, mem)
+            tts = get_provider(provider)
+            perf = Performance(
+                voice=voice_id,
+                mode="dialogue",
+                emotion="neutral",
+                intensity=0.3,
+                pace=pace * profile.base_pace,
+                pitch=pitch + profile.base_pitch,
+                style=style or profile.sbv2_style,
+                volume=1.0,
+            )
+            preview_dir = self.db_path.parent / "previews"
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            ext = getattr(tts, "ext", ".mp3")
+            out_file = preview_dir / f"preview_{voice_id}{ext}"
+            tts.synthesize(text, perf, out_file)
+            return {"ok": True, "path": str(out_file.resolve()), "voice_id": voice_id}
+        finally:
+            mem.close()
+
+    def rpc_import_document(self, sources: list[str] | str, title: str | None = None) -> dict:
+        """テキスト、PDF、画像群を取り込んで小説テキストファイルに変換する。"""
+        from importer import import_book_document
+        source_list = [sources] if isinstance(sources, str) else list(sources)
+        out_dir = self.db_path.parent / "imported"
+        out_file = import_book_document(source_list, title=title, out_dir=out_dir)
+        return {"ok": True, "novel_path": str(out_file.resolve()), "title": out_file.stem}
+
 
     # ------------------------------------------------------------ recovery
 

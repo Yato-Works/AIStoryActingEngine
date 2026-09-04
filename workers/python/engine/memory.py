@@ -22,8 +22,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from models import (Character, DirectedSegment, Dossier, Relationship,
-                    StoryState, VoiceProfile, VoiceState)
+from models import (Character, CharacterCasting, DirectedSegment, Dossier,
+                    Relationship, Series, StoryState, VoiceProfile, VoiceState)
 import schema as contracts
 
 
@@ -103,8 +103,24 @@ CREATE TABLE IF NOT EXISTS scene_events(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   book_id TEXT, chunk_index INTEGER, category TEXT, description TEXT,
   intensity REAL, targets TEXT, tone TEXT);
+-- ---- Dynamic Voice Registry & Series & Castings ----
+CREATE TABLE IF NOT EXISTS voice_registry(
+  voice_id TEXT PRIMARY KEY, label TEXT, gender TEXT, age TEXT,
+  base_pitch REAL, base_pace REAL, base_energy REAL,
+  tts_voice TEXT, sbv2_model_name TEXT, sbv2_model_id INTEGER, sbv2_style TEXT,
+  source TEXT, tags TEXT, description TEXT, profile_json TEXT,
+  created_at TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS series(
+  id TEXT PRIMARY KEY, title TEXT, description TEXT, castings_json TEXT,
+  created_at TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS character_castings(
+  book_id TEXT, character_id TEXT, character_name TEXT,
+  voice_id TEXT, voice_internal_id TEXT, is_locked INTEGER DEFAULT 0,
+  notes TEXT,
+  PRIMARY KEY(book_id, character_id));
 CREATE INDEX IF NOT EXISTS idx_segments_speaker ON segments(book_id, speaker);
 CREATE INDEX IF NOT EXISTS idx_memories_char ON memories(book_id, character_id);
+CREATE INDEX IF NOT EXISTS idx_castings_book ON character_castings(book_id);
 """
 
 
@@ -123,6 +139,7 @@ class MemoryEngine:
         ("characters", "erange", "REAL"),
         ("characters", "voice_internal_json", "TEXT"),
         ("relationships", "type", "TEXT"),
+        ("books", "series_id", "TEXT"),
     ]
 
     def _migrate(self) -> None:
@@ -597,5 +614,187 @@ class MemoryEngine:
         row = self.conn.execute(
             "SELECT title FROM books WHERE id=?", (self.book_id,)).fetchone()
         return str(row["title"]) if row and row["title"] else self.book_id
+
+    # -------------------------------------------------------------- voice_registry
+
+    def register_voice_profile(self, profile: VoiceProfile) -> None:
+        """ボイスプロファイルをグローバルレジストリに登録・更新する。"""
+        now = _now()
+        self.conn.execute(
+            """INSERT INTO voice_registry(
+                 voice_id, label, gender, age, base_pitch, base_pace, base_energy,
+                 tts_voice, sbv2_model_name, sbv2_model_id, sbv2_style,
+                 source, tags, description, profile_json, created_at, updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(voice_id) DO UPDATE SET
+                 label=excluded.label, gender=excluded.gender, age=excluded.age,
+                 base_pitch=excluded.base_pitch, base_pace=excluded.base_pace,
+                 base_energy=excluded.base_energy, tts_voice=excluded.tts_voice,
+                 sbv2_model_name=excluded.sbv2_model_name, sbv2_model_id=excluded.sbv2_model_id,
+                 sbv2_style=excluded.sbv2_style, source=excluded.source,
+                 tags=excluded.tags, description=excluded.description,
+                 profile_json=excluded.profile_json, updated_at=excluded.updated_at""",
+            (profile.voice_id, profile.label, profile.gender, profile.age,
+             profile.base_pitch, profile.base_pace, profile.base_energy,
+             profile.tts_voice, profile.sbv2_model_name, profile.sbv2_model_id,
+             profile.sbv2_style, profile.source,
+             json.dumps(profile.tags, ensure_ascii=False),
+             profile.description, profile.model_dump_json(),
+             now, now),
+        )
+        self.conn.commit()
+
+    def get_voice_profile(self, voice_id: str) -> VoiceProfile | None:
+        """レジストリからボイスプロファイルを取得する。"""
+        row = self.conn.execute(
+            "SELECT profile_json FROM voice_registry WHERE voice_id=?", (voice_id,)
+        ).fetchone()
+        return VoiceProfile.model_validate_json(row["profile_json"]) if row else None
+
+    def list_voice_profiles(self, gender: str | None = None,
+                            source: str | None = None) -> list[VoiceProfile]:
+        """登録済みボイスプロファイルを一覧取得する。"""
+        clauses: list[str] = []
+        params: list[object] = []
+        if gender:
+            clauses.append("gender=?")
+            params.append(gender)
+        if source:
+            clauses.append("source=?")
+            params.append(source)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.conn.execute(
+            f"SELECT profile_json FROM voice_registry {where} ORDER BY created_at ASC, voice_id ASC",
+            params,
+        ).fetchall()
+        return [VoiceProfile.model_validate_json(r["profile_json"]) for r in rows]
+
+    def delete_voice_profile(self, voice_id: str) -> bool:
+        """ボイスプロファイルを削除する（builtinは削除不可）。"""
+        row = self.conn.execute(
+            "SELECT source FROM voice_registry WHERE voice_id=?", (voice_id,)
+        ).fetchone()
+        if not row or row["source"] == "builtin":
+            return False
+        self.conn.execute("DELETE FROM voice_registry WHERE voice_id=?", (voice_id,))
+        self.conn.commit()
+        return True
+
+    # -------------------------------------------------------------- series
+
+    def upsert_series(self, series: Series) -> None:
+        """シリーズを作成・更新する。"""
+        now = _now()
+        created = series.created_at or now
+        self.conn.execute(
+            """INSERT INTO series(id, title, description, castings_json, created_at, updated_at)
+               VALUES(?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET
+                 title=excluded.title, description=excluded.description,
+                 castings_json=excluded.castings_json, updated_at=excluded.updated_at""",
+            (series.id, series.title, series.description,
+             json.dumps(series.castings, ensure_ascii=False),
+             created, now),
+        )
+        self.conn.commit()
+
+    def get_series(self, series_id: str) -> Series | None:
+        row = self.conn.execute(
+            "SELECT * FROM series WHERE id=?", (series_id,)
+        ).fetchone()
+        if not row:
+            return None
+        return Series(
+            id=row["id"],
+            title=row["title"] or "",
+            description=row["description"] or "",
+            castings=json.loads(row["castings_json"] or "{}"),
+            created_at=row["created_at"] or "",
+            updated_at=row["updated_at"] or "",
+        )
+
+    def list_series(self) -> list[Series]:
+        rows = self.conn.execute("SELECT * FROM series ORDER BY title ASC").fetchall()
+        return [
+            Series(
+                id=r["id"],
+                title=r["title"] or "",
+                description=r["description"] or "",
+                castings=json.loads(r["castings_json"] or "{}"),
+                created_at=r["created_at"] or "",
+                updated_at=r["updated_at"] or "",
+            )
+            for r in rows
+        ]
+
+    def set_book_series(self, book_id: str, series_id: str | None) -> None:
+        self.conn.execute(
+            "UPDATE books SET series_id=? WHERE id=?", (series_id, book_id)
+        )
+        self.conn.commit()
+
+    def get_book_series_id(self, book_id: str | None = None) -> str | None:
+        bid = book_id or self.book_id
+        row = self.conn.execute(
+            "SELECT series_id FROM books WHERE id=?", (bid,)
+        ).fetchone()
+        return row["series_id"] if row and row["series_id"] else None
+
+    # -------------------------------------------------------------- character_castings
+
+    def set_character_casting(self, casting: CharacterCasting, book_id: str | None = None) -> None:
+        """書籍固有のキャラクター配役を保存する。"""
+        bid = book_id or self.book_id
+        self.conn.execute(
+            """INSERT INTO character_castings(
+                 book_id, character_id, character_name, voice_id,
+                 voice_internal_id, is_locked, notes)
+               VALUES(?,?,?,?,?,?,?)
+               ON CONFLICT(book_id, character_id) DO UPDATE SET
+                 character_name=excluded.character_name,
+                 voice_id=excluded.voice_id,
+                 voice_internal_id=excluded.voice_internal_id,
+                 is_locked=excluded.is_locked,
+                 notes=excluded.notes""",
+            (bid, casting.character_id, casting.character_name,
+             casting.voice_id, casting.voice_internal_id,
+             1 if casting.is_locked else 0, casting.notes),
+        )
+        self.conn.commit()
+
+    def get_character_castings(self, book_id: str | None = None) -> list[CharacterCasting]:
+        bid = book_id or self.book_id
+        rows = self.conn.execute(
+            "SELECT * FROM character_castings WHERE book_id=? ORDER BY character_id",
+            (bid,),
+        ).fetchall()
+        return [
+            CharacterCasting(
+                character_id=r["character_id"],
+                character_name=r["character_name"] or "",
+                voice_id=r["voice_id"],
+                voice_internal_id=r["voice_internal_id"],
+                is_locked=bool(r["is_locked"]),
+                notes=r["notes"] or "",
+            )
+            for r in rows
+        ]
+
+    def get_character_casting(self, character_id: str, book_id: str | None = None) -> CharacterCasting | None:
+        bid = book_id or self.book_id
+        row = self.conn.execute(
+            "SELECT * FROM character_castings WHERE book_id=? AND character_id=?",
+            (bid, character_id),
+        ).fetchone()
+        if not row:
+            return None
+        return CharacterCasting(
+            character_id=row["character_id"],
+            character_name=row["character_name"] or "",
+            voice_id=row["voice_id"],
+            voice_internal_id=row["voice_internal_id"],
+            is_locked=bool(row["is_locked"]),
+            notes=row["notes"] or "",
+        )
 
 

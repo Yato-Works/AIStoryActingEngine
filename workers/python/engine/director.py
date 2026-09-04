@@ -9,10 +9,12 @@ Phase 2: Character Intelligence
 
 from __future__ import annotations
 
-from models import Character, Dossier, DirectedSegment, Performance, Segment, StoryState, VoiceProfile
+from models import (Character, CharacterCasting, Dossier, DirectedSegment,
+                    Performance, Segment, StoryState, VoiceProfile)
 import schema as contracts
 from voices import (NARRATOR, NARRATOR_VOICE,  # noqa: F401  (再輸出: 後方互換)
-                    NARRATOR_VOICE_INTERNAL, INTERNAL_POOL, VOICE_POOL)
+                    NARRATOR_VOICE_INTERNAL, INTERNAL_POOL, VOICE_POOL,
+                    all_profiles, resolve_voice_profile, _internal_of)
 
 # 感情 → ((pace定数, pace強度係数), (pitch定数, pitch強度係数), (volume定数, volume強度係数))
 # 値 = 定数 + 強度係数 × intensity。RuleBased / CharacterAware 共通。
@@ -54,43 +56,117 @@ def emotion_style(emotion: str, intensity: float = 0.3, seed: int | None = 42) -
 class CastingDirector:
     """キャラクターに External / Internal の Voice Profile を割り当てる。
 
-    suggest（LLM キャスティング関数）が渡されれば提案を採用し、
-    失敗・不備なら性別/年齢ルールへフォールバックする。
+    優先順位:
+    1. ユーザーによる明示的な指定・固定 (character_castings)
+    2. シリーズ設定からの引き継ぎ (series.castings)
+    3. LLM キャスティング提案 (suggest)
+    4. 属性・性格・タグに基づく自動マッチング (all_profiles)
     """
 
     def assign_voices(self, state: StoryState,
-                      suggest=None) -> list[str]:
+                      suggest=None,
+                      memory=None) -> list[str]:
         """新規に声を割り当てたキャラの id リストを返す。"""
         assigned: list[str] = []
         used_ext = {ch.voice.voice_id for ch in state.characters.values() if ch.voice}
         used_int = {ch.voice_internal.voice_id
                     for ch in state.characters.values() if ch.voice_internal}
+
+        # 1. シリーズ情報の取得（あれば）
+        series_castings: dict[str, dict[str, str]] = {}
+        if memory is not None:
+            series_id = memory.get_book_series_id()
+            if series_id:
+                series_obj = memory.get_series(series_id)
+                if series_obj:
+                    series_castings = series_obj.castings or {}
+
+        # 2. 書籍内の手動キャスティングの取得
+        existing_castings = {}
+        if memory is not None:
+            for c in memory.get_character_castings():
+                existing_castings[c.character_id] = c
+
+        ext_pool = [p for p in all_profiles(memory) if not p.voice_id.endswith("i") and p.voice_id != NARRATOR_VOICE.voice_id]
+        int_pool = [p for p in all_profiles(memory) if p.voice_id.endswith("i") and p.voice_id != NARRATOR_VOICE_INTERNAL.voice_id]
+        if not ext_pool:
+            ext_pool = VOICE_POOL
+        if not int_pool:
+            int_pool = INTERNAL_POOL
+
         for ch in state.characters.values():
             was_new = ch.voice is None or ch.voice_internal is None
+
+            # Priority 1: ユーザー手動キャスティング
+            explicit = existing_castings.get(ch.id)
+            if explicit:
+                if explicit.voice_id and ch.voice is None:
+                    ch.voice = resolve_voice_profile(explicit.voice_id, memory)
+                    used_ext.add(ch.voice.voice_id)
+                if explicit.voice_internal_id and ch.voice_internal is None:
+                    ch.voice_internal = resolve_voice_profile(explicit.voice_internal_id, memory)
+                    used_int.add(ch.voice_internal.voice_id)
+
+            # Priority 2: シリーズ設定からの引き継ぎ
+            # キャラ名またはキャラIDで検索
+            series_match = series_castings.get(ch.name) or series_castings.get(ch.id)
+            if series_match:
+                if "voice_id" in series_match and ch.voice is None:
+                    ch.voice = resolve_voice_profile(series_match["voice_id"], memory)
+                    used_ext.add(ch.voice.voice_id)
+                if "voice_internal_id" in series_match and ch.voice_internal is None:
+                    ch.voice_internal = resolve_voice_profile(series_match["voice_internal_id"], memory)
+                    used_int.add(ch.voice_internal.voice_id)
+
+            # Priority 3: LLM 提案
             if ch.voice is None:
-                ch.voice = self._pick_llm(ch, suggest, used_ext, internal=False) \
-                    or self._pick(ch, used_ext, VOICE_POOL)
+                ch.voice = self._pick_llm(ch, suggest, used_ext, internal=False, pool=ext_pool)
+                if ch.voice:
+                    used_ext.add(ch.voice.voice_id)
+            if ch.voice_internal is None:
+                ch.voice_internal = self._pick_llm(ch, suggest, used_int, internal=True, pool=int_pool)
+                if ch.voice_internal:
+                    used_int.add(ch.voice_internal.voice_id)
+
+            # Priority 4: スマートマッチング（属性・タグ・性格）
+            if ch.voice is None:
+                ch.voice = self._pick(ch, used_ext, ext_pool)
                 used_ext.add(ch.voice.voice_id)
             if ch.voice_internal is None:
-                ch.voice_internal = self._pick_llm(ch, suggest, used_int, internal=True) \
-                    or self._pick(ch, used_int, INTERNAL_POOL)
+                # 外部声から内面声を導出するか、内部プールから拾う
+                if ch.voice:
+                    ch.voice_internal = _internal_of(ch.voice)
+                else:
+                    ch.voice_internal = self._pick(ch, used_int, int_pool)
                 used_int.add(ch.voice_internal.voice_id)
+
             if was_new:
                 assigned.append(ch.id)
+                # memory があればキャスティング結果を保存
+                if memory is not None:
+                    memory.set_character_casting(CharacterCasting(
+                        character_id=ch.id,
+                        character_name=ch.name,
+                        voice_id=ch.voice.voice_id if ch.voice else "",
+                        voice_internal_id=ch.voice_internal.voice_id if ch.voice_internal else None,
+                        is_locked=bool(explicit and explicit.is_locked),
+                        notes="auto-assigned" if not explicit else explicit.notes,
+                    ))
+
         return assigned
 
     @staticmethod
     def _pick_llm(ch: Character, suggest, used_ids: set[str],
-                  internal: bool) -> VoiceProfile | None:
+                  internal: bool, pool: list[VoiceProfile] | None = None) -> VoiceProfile | None:
         if suggest is None:
             return None
         key = "internal" if internal else "external"
-        pool = INTERNAL_POOL if internal else VOICE_POOL
+        target_pool = pool or (INTERNAL_POOL if internal else VOICE_POOL)
         try:
             proposal = suggest(ch.model_dump()) or {}
             prop = proposal.get(key) or {}
             vid = str(prop.get("voice_id") or "")
-            cand = next((p for p in pool if p.voice_id == vid and vid not in used_ids), None)
+            cand = next((p for p in target_pool if p.voice_id == vid and vid not in used_ids), None)
             if cand is None:
                 return None
             data = cand.model_dump()
@@ -105,15 +181,29 @@ class CastingDirector:
     @staticmethod
     def _pick(ch: Character, used_ids: set[str],
               pool: list[VoiceProfile]) -> VoiceProfile:
-        for profile in pool:
-            if profile.voice_id in used_ids:
-                continue
-            if profile.gender == ch.gender and profile.age == ch.age:
-                return profile
+        """属性と性格タグを総合して最もスコアが高いプロファイルを選択する。"""
+        # 1. 完全一致 (gender と age)
+        exact_matches = [p for p in pool if p.voice_id not in used_ids and p.gender == ch.gender and p.age == ch.age]
+        if exact_matches:
+            ch_keywords = set(ch.personality + ch.traits + [ch.name, ch.role])
+            def tag_score(p: VoiceProfile) -> int:
+                return sum(1 for tag in p.tags for kw in ch_keywords if kw and (tag in kw or kw in tag))
+            return max(exact_matches, key=tag_score)
+
+        # 2. 性別一致
+        gender_matches = [p for p in pool if p.voice_id not in used_ids and p.gender == ch.gender]
+        if gender_matches:
+            ch_keywords = set(ch.personality + ch.traits + [ch.name, ch.role])
+            def tag_score(p: VoiceProfile) -> int:
+                return sum(1 for tag in p.tags for kw in ch_keywords if kw and (tag in kw or kw in tag))
+            return max(gender_matches, key=tag_score)
+
+        # 3. 未使用の先頭
         for profile in pool:
             if profile.voice_id not in used_ids:
                 return profile
         return pool[0]
+
 
 
 class RuleBasedDirector:

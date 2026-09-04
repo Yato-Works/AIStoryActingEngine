@@ -49,7 +49,32 @@ class VoiceProfile(BaseModel):
     emotional_reactivity: float = 0.5  # 0.0 .. 1.0  (感情起伍の激しさ)
     habits: dict[str, str] = Field(default_factory=dict)  # thinking/surprise/disbelief 口頭語
     timing_habit: float = 0.0      # 0.0 .. 1.0  (response delay / timing癖)
+    source: str = "builtin"        # builtin / user / cloned
+    tags: list[str] = Field(default_factory=list)  # ["杉田智和風", "渋い", "低音", "中年"]
+    description: str = ""
 
+
+class Series(BaseModel):
+    """複数巻（1巻、2巻...）を束ねるシリーズ単位。声の引き継ぎ設定を保持。"""
+
+    id: str
+    title: str
+    description: str = ""
+    # character_name or id -> {"voice_id": "...", "voice_internal_id": "..."}
+    castings: dict[str, dict[str, str]] = Field(default_factory=dict)
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class CharacterCasting(BaseModel):
+    """書籍またはシリーズにおけるキャラクターへのボイス配役。"""
+
+    character_id: str
+    character_name: str = ""
+    voice_id: str
+    voice_internal_id: Optional[str] = None
+    is_locked: bool = False  # ユーザーが明示的に指定した場合はTrue（自動再配役で上書きしない）
+    notes: str = ""
 
 
 class VoiceState(BaseModel):
@@ -179,3 +204,4 @@ class DirectedSegment(Segment):
     """Performance が付与されたセグメント（TTS に渡せる状態）。"""
 
     performance: Optional[Performance] = None
+

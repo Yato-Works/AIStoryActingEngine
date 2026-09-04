@@ -119,9 +119,8 @@ class StyleBertVITS2Provider:
     def synthesize(self, text: str, perf: Performance, out_path: Path) -> None:
         import httpx
 
-        from voices import all_profiles
-        profiles = {p.voice_id: p for p in all_profiles()}
-        profile = profiles.get(perf.voice)
+        from voices import resolve_voice_profile
+        profile = resolve_voice_profile(perf.voice)
         model_name = profile.sbv2_model_name if profile else "jvnv-M1-jp"
         style = perf.style or (profile.sbv2_style if profile else "Neutral")
 

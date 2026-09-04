@@ -195,6 +195,88 @@ void WorkerBridge::listJobs(int limit)
     send(makeRequest(nextId(), QStringLiteral("list_jobs"), {{"limit", limit}}));
 }
 
+void WorkerBridge::listVoiceProfiles(const QString &gender, const QString &source)
+{
+    QJsonObject params;
+    if (!gender.isEmpty()) params.insert("gender", gender);
+    if (!source.isEmpty()) params.insert("source", source);
+    send(makeRequest(nextId(), QStringLiteral("list_voice_profiles"), params));
+}
+
+void WorkerBridge::saveVoiceProfile(const QVariantMap &profile)
+{
+    QJsonObject p = QJsonObject::fromVariantMap(profile);
+    send(makeRequest(nextId(), QStringLiteral("save_voice_profile"), {{"profile", p}}));
+}
+
+void WorkerBridge::deleteVoiceProfile(const QString &voiceId)
+{
+    send(makeRequest(nextId(), QStringLiteral("delete_voice_profile"), {{"voice_id", voiceId}}));
+}
+
+void WorkerBridge::getCastings(const QString &bookId)
+{
+    send(makeRequest(nextId(), QStringLiteral("get_castings"), {{"book_id", bookId}}));
+}
+
+void WorkerBridge::assignCasting(const QString &bookId, const QString &characterId,
+                                 const QString &voiceId, const QString &voiceInternalId,
+                                 bool isLocked, const QString &notes)
+{
+    QJsonObject params{
+        {"book_id", bookId},
+        {"character_id", characterId},
+        {"voice_id", voiceId},
+        {"is_locked", isLocked},
+        {"notes", notes}
+    };
+    if (!voiceInternalId.isEmpty())
+        params.insert("voice_internal_id", voiceInternalId);
+    send(makeRequest(nextId(), QStringLiteral("assign_casting"), params));
+}
+
+void WorkerBridge::previewVoice(const QString &text, const QString &voiceId,
+                                const QString &style, double pitch, double pace,
+                                const QString &provider)
+{
+    QJsonObject params{
+        {"text", text},
+        {"voice_id", voiceId},
+        {"style", style},
+        {"pitch", pitch},
+        {"pace", pace},
+        {"provider", provider}
+    };
+    send(makeRequest(nextId(), QStringLiteral("preview_voice"), params));
+}
+
+void WorkerBridge::listSeries()
+{
+    send(makeRequest(nextId(), QStringLiteral("list_series"), {}));
+}
+
+void WorkerBridge::upsertSeries(const QVariantMap &series)
+{
+    send(makeRequest(nextId(), QStringLiteral("upsert_series"), {{"series", QJsonObject::fromVariantMap(series)}}));
+}
+
+void WorkerBridge::assignBookToSeries(const QString &bookId, const QString &seriesId)
+{
+    send(makeRequest(nextId(), QStringLiteral("assign_book_to_series"), {
+        {"book_id", bookId},
+        {"series_id", seriesId.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(seriesId)}
+    }));
+}
+
+void WorkerBridge::importDocument(const QStringList &sources, const QString &title)
+{
+    QJsonArray arr;
+    for (const auto &s : sources) arr.append(s);
+    QJsonObject params{{"sources", arr}};
+    if (!title.isEmpty()) params.insert("title", title);
+    send(makeRequest(nextId(), QStringLiteral("import_document"), params));
+}
+
 void WorkerBridge::restart()
 {
     if (m_proc.state() != QProcess::NotRunning)
@@ -265,6 +347,27 @@ void WorkerBridge::handleResponse(const QJsonObject &resp)
         startPolling(jobId);
     } else if (method == QStringLiteral("list_jobs")) {
         emit jobsLoaded(toVariantList(result.toObject().value("jobs")));
+    } else if (method == QStringLiteral("list_voice_profiles")) {
+        emit voiceProfilesLoaded(toVariantList(result.toObject().value("profiles")));
+    } else if (method == QStringLiteral("save_voice_profile")) {
+        emit voiceProfileSaved(result.toObject().value("voice_id").toString());
+    } else if (method == QStringLiteral("delete_voice_profile")) {
+        emit voiceProfileDeleted(result.toObject().value("deleted").toString());
+    } else if (method == QStringLiteral("get_castings")) {
+        emit castingsLoaded(toVariantList(result.toObject().value("castings")),
+                            result.toObject().value("series_id").toString());
+    } else if (method == QStringLiteral("assign_casting")) {
+        const QJsonObject o = result.toObject();
+        emit castingAssigned(o.value("character_id").toString(), o.value("voice_id").toString());
+    } else if (method == QStringLiteral("preview_voice")) {
+        emit voicePreviewReady(result.toObject().value("path").toString());
+    } else if (method == QStringLiteral("list_series")) {
+        emit seriesLoaded(toVariantList(result.toObject().value("series")));
+    } else if (method == QStringLiteral("upsert_series")) {
+        emit seriesSaved(result.toObject().value("series_id").toString());
+    } else if (method == QStringLiteral("import_document")) {
+        const QJsonObject o = result.toObject();
+        emit documentImported(o.value("novel_path").toString(), o.value("title").toString());
     }
 }
 

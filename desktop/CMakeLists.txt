@@ -29,6 +29,8 @@ qt6_add_qml_module(aiae_desktop
         src/Main.qml
         src/BookshelfPage.qml
         src/PlayerPage.qml
+        src/CastingPage.qml
+        src/VoiceStudioPage.qml
         src/StudioPage.qml
         src/NowPlayingBar.qml
 )

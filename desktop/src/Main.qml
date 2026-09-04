@@ -21,9 +21,14 @@ ApplicationWindow {
     ListModel { id: booksModel }
     ListModel { id: chaptersModel }
     ListModel { id: eventsModel }
+    ListModel { id: voiceProfilesModel }
+    ListModel { id: castingsModel }
 
     MediaPlayer { id: player; audioOutput: audioOut }
     AudioOutput { id: audioOut; volume: 0.8 }
+
+    MediaPlayer { id: previewPlayer; audioOutput: previewAudioOut }
+    AudioOutput { id: previewAudioOut; volume: 0.9 }
 
     // ---- helpers ----
     function fmtTime(ms) {
@@ -37,7 +42,7 @@ ApplicationWindow {
         var n = String(p).replace(/\\/g, "/")
         return n.indexOf("://") >= 0 ? n : encodeURI("file:///" + n)
     }
-    function openBook(bookId) { statusText = "読み込み中…"; bridge.getBook(bookId) }
+    function openBook(bookId) { statusText = "読み込み中…"; bridge.getBook(bookId); bridge.getCastings(bookId) }
     function playBook(book) {
         currentBook = book
         chaptersModel.clear()
@@ -66,6 +71,37 @@ ApplicationWindow {
             eventsModel.clear()
             for (var i = 0; i < ev.length; ++i) eventsModel.append(ev[i])
         }
+        function onVoiceProfilesLoaded(profiles) {
+            voiceProfilesModel.clear()
+            for (var i = 0; i < profiles.length; ++i) voiceProfilesModel.append(profiles[i])
+        }
+        function onCastingsLoaded(castings, seriesId) {
+            castingsModel.clear()
+            for (var i = 0; i < castings.length; ++i) castingsModel.append(castings[i])
+        }
+        function onVoiceProfileSaved(voiceId) {
+            root.statusText = "✓ ボイス保存完了: " + voiceId
+            bridge.listVoiceProfiles()
+        }
+        function onVoiceProfileDeleted(voiceId) {
+            root.statusText = "✓ ボイス削除完了: " + voiceId
+            bridge.listVoiceProfiles()
+        }
+        function onCastingAssigned(characterId, voiceId) {
+            root.statusText = "✓ 配役完了: " + characterId + " → " + voiceId
+            if (root.currentBook) bridge.getCastings(root.currentBook.id)
+        }
+        function onVoicePreviewReady(path) {
+            root.statusText = "▶ プレビュー再生中…"
+            previewPlayer.source = root.toFileUrl(path)
+            previewPlayer.play()
+        }
+        function onDocumentImported(novelPath, title) {
+            root.statusText = "✓ ドキュメント取り込み完了: " + title + " — 解析ジョブを開始します"
+            bridge.startJob(novelPath, "edge", false, false)
+            root.currentPage = "studio"
+            bridge.listEvents(80)
+        }
         function onErrorOccurred(code, message) { root.statusText = "⚠ " + message }
         function onLogMessage(line) { console.log("[worker]", line) }
     }
@@ -86,9 +122,11 @@ ApplicationWindow {
                 }
                 Repeater {
                     model: [
-                        { key: "library", label: "📚 ライブラリ" },
+                        { key: "library", label: "📚 本棚" },
                         { key: "player", label: "▶ プレイヤー" },
-                        { key: "studio", label: "🎙 スタジオ" }
+                        { key: "casting", label: "🎭 キャスティング" },
+                        { key: "voiceStudio", label: "🎙 ボイス作成" },
+                        { key: "studio", label: "📊 ログ・進捗" }
                     ]
                     delegate: Button {
                         required property var modelData
@@ -99,6 +137,8 @@ ApplicationWindow {
                         onClicked: {
                             root.currentPage = modelData.key
                             if (modelData.key === "studio") bridge.listEvents(80)
+                            if (modelData.key === "casting" && root.currentBook) bridge.getCastings(root.currentBook.id)
+                            if (modelData.key === "voiceStudio") bridge.listVoiceProfiles()
                         }
                     }
                 }
@@ -127,11 +167,14 @@ ApplicationWindow {
             StackLayout {
                 Layout.fillWidth: true; Layout.fillHeight: true
                 currentIndex: root.currentPage === "library" ? 0
-                            : root.currentPage === "player" ? 1 : 2
+                            : root.currentPage === "player" ? 1
+                            : root.currentPage === "casting" ? 2
+                            : root.currentPage === "voiceStudio" ? 3 : 4
                 BookshelfPage {
                     books: booksModel
                     accent: root.cAccent
                     onOpenBook: (bid) => root.openBook(bid)
+                    onImportRequested: importDialog.open()
                 }
                 PlayerPage {
                     book: root.currentBook
@@ -139,6 +182,28 @@ ApplicationWindow {
                     chapters: chaptersModel
                     accent: root.cAccent
                     onSeekRequested: (sec) => root.seekTo(sec)
+                }
+                CastingPage {
+                    book: root.currentBook
+                    castings: castingsModel
+                    voiceProfiles: voiceProfilesModel
+                    accent: root.cAccent
+                    onAssignRequested: (bid, cid, vext, vint, locked) => {
+                        bridge.assignCasting(bid, cid, vext, vint, locked, "")
+                    }
+                    onPreviewRequested: (txt, vid) => {
+                        bridge.previewVoice(txt, vid, "Neutral", 0.0, 1.0, "edge")
+                    }
+                    onRefreshRequested: (bid) => bridge.getCastings(bid)
+                }
+                VoiceStudioPage {
+                    voiceProfiles: voiceProfilesModel
+                    accent: root.cAccent
+                    onSaveRequested: (prof) => bridge.saveVoiceProfile(prof)
+                    onDeleteRequested: (vid) => bridge.deleteVoiceProfile(vid)
+                    onPreviewRequested: (txt, vid, sty, pit, pac, prov) => {
+                        bridge.previewVoice(txt, vid, sty, pit, pac, prov)
+                    }
                 }
                 StudioPage {
                     book: root.currentBook
@@ -156,5 +221,57 @@ ApplicationWindow {
         }
     }
 
-    Component.onCompleted: bridge.listBooks()
+    // ---- 書籍インポートダイアログ ----
+    Dialog {
+        id: importDialog
+        title: "📥 書籍の取り込み (PDF / 画像 / テキスト)"
+        modal: true
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        anchors.centerIn: parent
+        width: 480
+        background: Rectangle { radius: 12; color: "#222222"; border.color: "#333333" }
+
+        contentItem: ColumnLayout {
+            spacing: 14
+            Text {
+                text: "持っている本のファイルパス（PDF / 画像 / TXT）を指定してください:"
+                color: "#cccccc"; font.pixelSize: 13
+            }
+            ColumnLayout {
+                spacing: 4; Layout.fillWidth: true
+                Text { text: "本のタイトル"; color: "#888888"; font.pixelSize: 11 }
+                TextField {
+                    id: importTitleInput
+                    Layout.fillWidth: true
+                    placeholderText: "無職転生 第1巻"
+                    color: "#eeeeee"
+                    background: Rectangle { radius: 6; color: "#2d2d2d" }
+                }
+            }
+            ColumnLayout {
+                spacing: 4; Layout.fillWidth: true
+                Text { text: "ファイルパス (またはカンマ区切りの画像パス)"; color: "#888888"; font.pixelSize: 11 }
+                TextField {
+                    id: importPathInput
+                    Layout.fillWidth: true
+                    placeholderText: "C:/path/to/novel.txt または .pdf"
+                    color: "#eeeeee"
+                    background: Rectangle { radius: 6; color: "#2d2d2d" }
+                }
+            }
+        }
+
+        onAccepted: {
+            var paths = importPathInput.text.split(",").map(function(p) { return p.trim() }).filter(function(p) { return p.length > 0 })
+            if (paths.length > 0) {
+                root.statusText = "ドキュメントを取り込み中…"
+                bridge.importDocument(paths, importTitleInput.text)
+            }
+        }
+    }
+
+    Component.onCompleted: {
+        bridge.listBooks()
+        bridge.listVoiceProfiles()
+    }
 }

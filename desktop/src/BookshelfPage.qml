@@ -7,6 +7,7 @@ Page {
     property var books: null
     property color accent: "#1db954"
     signal openBook(string bookId)
+    signal importRequested()
 
     function hue(id) {
         var s = String(id || ""), h = 0
@@ -19,8 +20,13 @@ Page {
     header: Control {
         padding: 24
         contentItem: RowLayout {
-            Text { text: "📚 マイライブラリ"; color: "#eeeeee"; font.pixelSize: 26; font.bold: true }
+            Text { text: "📚 マイ本棚 (AudioBook)"; color: "#eeeeee"; font.pixelSize: 26; font.bold: true }
             Item { Layout.fillWidth: true }
+            Button {
+                text: "📥 本を取り込む (PDF/画像/テキスト)"
+                highlighted: true
+                onClicked: page.importRequested()
+            }
             Text { text: (page.books ? page.books.count : 0) + " 冊"; color: "#a0a0a0"; font.pixelSize: 14 }
         }
     }

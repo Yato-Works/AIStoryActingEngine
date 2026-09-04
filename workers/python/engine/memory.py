@@ -121,6 +121,47 @@ CREATE TABLE IF NOT EXISTS character_castings(
 CREATE INDEX IF NOT EXISTS idx_segments_speaker ON segments(book_id, speaker);
 CREATE INDEX IF NOT EXISTS idx_memories_char ON memories(book_id, character_id);
 CREATE INDEX IF NOT EXISTS idx_castings_book ON character_castings(book_id);
+-- ==== VoiceMem Dual-Brain (Phase 4) ====
+-- 左脳: 階層的ファクト記憶 Schema -> Entity -> MemItem
+CREATE TABLE IF NOT EXISTS lb_schemas(
+  schema_id TEXT PRIMARY KEY, label TEXT, book_id TEXT);
+CREATE TABLE IF NOT EXISTS lb_entities(
+  entity_id TEXT PRIMARY KEY, schema_id TEXT, label TEXT,
+  entity_type TEXT, book_id TEXT);
+CREATE TABLE IF NOT EXISTS lb_memitems(
+  item_id TEXT PRIMARY KEY, entity_id TEXT, chunk_index INTEGER,
+  content TEXT, importance REAL, chapter INTEGER, book_id TEXT);
+-- 左脳: クラスタ（動的昇格）
+CREATE TABLE IF NOT EXISTS lb_clusters(
+  cluster_id TEXT PRIMARY KEY, label TEXT, memitem_ids TEXT,
+  cohesion_score REAL, chapter_range TEXT, book_id TEXT,
+  created_at TEXT, promoted_chunk INTEGER);
+-- 右脳: 定常特性（Independent Node）
+CREATE TABLE IF NOT EXISTS rb_independent(
+  character_id TEXT PRIMARY KEY,
+  core_personality TEXT, core_trauma TEXT, core_values TEXT,
+  core_fears TEXT, core_desires TEXT,
+  baseline_voice_state TEXT);
+-- 右脳: 動的ノード（Dynamic Node）
+CREATE TABLE IF NOT EXISTS rb_dynamic(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  character_id TEXT, chunk_index INTEGER,
+  voice_state TEXT, toward_character TEXT,
+  emotion_label TEXT, intensity REAL, decay_factor REAL,
+  trigger_event TEXT, book_id TEXT, created_at TEXT);
+-- クロスグラフリンク L^{IA}
+CREATE TABLE IF NOT EXISTS cross_links(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  left_item_id TEXT, left_type TEXT DEFAULT 'memitem',
+  right_node_id TEXT, link_type TEXT, strength REAL,
+  chunk_index INTEGER, book_id TEXT);
+-- VoiceMem インデックス
+CREATE INDEX IF NOT EXISTS idx_lb_memitems_entity ON lb_memitems(entity_id);
+CREATE INDEX IF NOT EXISTS idx_lb_memitems_chunk ON lb_memitems(book_id, chunk_index);
+CREATE INDEX IF NOT EXISTS idx_rb_dynamic_char ON rb_dynamic(character_id, book_id);
+CREATE INDEX IF NOT EXISTS idx_rb_dynamic_chunk ON rb_dynamic(book_id, chunk_index);
+CREATE INDEX IF NOT EXISTS idx_cross_left ON cross_links(left_item_id, book_id);
+CREATE INDEX IF NOT EXISTS idx_cross_right ON cross_links(right_node_id, book_id);
 """
 
 

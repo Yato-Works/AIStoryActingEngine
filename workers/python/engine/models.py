@@ -205,3 +205,183 @@ class DirectedSegment(Segment):
 
     performance: Optional[Performance] = None
 
+
+# =================================================================
+# VoiceMem Dual-Brain Architecture (Phase 4)
+# =================================================================
+
+class LBSchema(BaseModel):
+    """左脳: 物語スキーマ（シーン類型）。
+
+    例: 「戦闘」「会話」「回想」「修練」「移動」「日常」
+    """
+    schema_id: str
+    label: str = ""           # 「戦闘シーン」「会話シーン」等
+    book_id: str = ""
+
+
+class LBEntity(BaseModel):
+    """左脳: エンティティ（登場人物・場所・アイテム・イベント）。
+
+    各エンティティは特定のスキーマに割り当てられ、ノード間のエッジが
+    意味的関係性を保持する。
+    """
+    entity_id: str
+    schema_id: str = ""       # 属するスキーマ
+    label: str = ""           # 表示名「ルーデウス」「ブエナ村」
+    entity_type: str = ""     # character / location / item / event / organization
+    book_id: str = ""
+
+
+class LBMemItem(BaseModel):
+    """左脳: 記憶項目（MemItem）— 階層的最下層の事実記憶。
+
+    各MemItemは特定のEntityに紐付き、物語の特定チャンクで発生した
+    具体的な事実を保持する。
+    """
+    item_id: str
+    entity_id: str = ""       # 紐付くEntity
+    chunk_index: int = 0
+    content: str = ""         # 事実の要約「ルーデウスが水弾を習得」
+    importance: float = 0.5    # 0.0-1.0 物語的重要性（転移事件=1.0、朝食=0.1）
+    chapter: int = 1
+    book_id: str = ""
+
+
+class LBCluster(BaseModel):
+    """左脳: クラスタ — 動的昇格された高次検索クラスタ。
+
+    頻繁に共同検索されるMemItem群が、凝集度スコア ρ(H) > α を超えると
+    LLMジャッジ検証を経て独立したクラスタへ昇格する。
+    例: 「ブエナ村修練期」「転移事件」「エリス同行期」
+    """
+    cluster_id: str
+    label: str = ""           # 「ブエナ村での幼少期修練」
+    memitem_ids: list[str] = Field(default_factory=list)
+    cohesion_score: float = 0.0  # ρ(H) 凝集度
+    chapter_range: str = ""   # 「1-3」「5-8」
+    book_id: str = ""
+    created_at: str = ""
+    promoted_chunk: int = 0   # 昇格したチャンクindex
+
+
+class RBIndependent(BaseModel):
+    """右脳: 独立ノード（Independent Node）— 定常特性。
+
+    時間変化に対して安定した、キャラクターの本質的な特性。
+    VoiceMemの「ユーザーの永続的な性格や価値観」を保持。
+    """
+    character_id: str
+    core_personality: list[str] = Field(default_factory=list)   # ["前向き", "ナイーブ"]
+    core_trauma: str = ""      # 「前世の無職による後悔」
+    core_values: list[str] = Field(default_factory=list)        # ["努力", "家族の絆"]
+    baseline_voice_state: VoiceState = Field(default_factory=VoiceState)
+    core_fears: list[str] = Field(default_factory=list)         # ["再び無職になること"]
+    core_desires: list[str] = Field(default_factory=list)       # ["魔法で一流になる"]
+
+
+class RBDynamic(BaseModel):
+    """右脳: 動的ノード（Dynamic Node）— 文脈依存の感情傾向。
+
+    チャンクごとに更新される、キャラクターの現在の感情状態。
+    VoiceMemの「文脈依存の感情傾向」と「左脳Entityへの動的関連付け」を統合。
+    """
+    id: Optional[int] = None
+    character_id: str
+    chunk_index: int = 0
+    voice_state: VoiceState = Field(default_factory=VoiceState)
+    toward_character: Optional[str] = None   # 対象キャラ（null=一般的感情）
+    emotion_label: str = "neutral"
+    intensity: float = 0.0
+    decay_factor: float = 0.55   # transient=0.45-0.60, persistent=0.85-0.90
+    trigger_event: str = ""      # この感情を引き起こした左脳MemItem/Cluster
+    book_id: str = ""
+    created_at: str = ""
+
+
+class CrossLink(BaseModel):
+    """クロスグラフリンク L^{IA} — 左脳と右脳を横断的に結合。
+
+    「この事実がこの感情を引き起こした」という因果を明示的に保持。
+    例: 「パウロとの喧嘩(MemItem)」→「パウロへの怒り(Dynamic Node)」
+    """
+    id: Optional[int] = None
+    left_item_id: str = ""      # lb_memitems.item_id or lb_clusters.cluster_id
+    left_type: str = "memitem"  # "memitem" / "cluster"
+    right_node_id: str = ""     # rb_dynamic.id (文字列化)
+    link_type: str = "caused"   # caused / reinforced / contradicted / triggered
+    strength: float = 0.5        # 0.0-1.0 リンクの強度
+    chunk_index: int = 0
+    book_id: str = ""
+
+
+class AffectiveSummary(BaseModel):
+    """右脳感情状態の要約 — Dossier生成用の軽量表現。
+
+    Top-K=5検索で使用する、コンパクトな感情コンテキスト。
+    """
+    character_id: str
+    current_state: VoiceState = Field(default_factory=VoiceState)
+    dominant_emotion: str = "neutral"
+    dominant_target: Optional[str] = None   # 感情の対象キャラ
+    recent_events: list[str] = Field(default_factory=list)  # 最近の感情変化要因
+    persistent_mood: str = ""   # 持続的な気分（「悲しみが癒えかけている」）
+
+
+class RichDossier(BaseModel):
+    """VoiceMem版強化Dossier — 二元脳情報を統合したDirector入力。
+
+    既存のDossier（人物+関係+場面）に加え、左脳の物語クラスタと
+    右脳の感情状態、両者の因果リンクを含む。
+
+    Top-K=5設計: 左脳クラスタは最大5件、右脳動的ノードも最大5件、
+    クロスリンクも最大5件のみを含める（VoiceMem式省資源設計）。
+    """
+    # --- 既存Dossierと同等の基本情報 ---
+    character: Character
+    listener: Optional[Character] = None
+    relationship: Optional[Relationship] = None
+    carryover: Optional[tuple[str, float]] = None
+    recent: list[str] = Field(default_factory=list)
+    scene: str = ""
+    mood: str = ""
+
+    # --- VoiceMem追加: 左脳（物語記憶）---
+    leftbrain_clusters: list[LBCluster] = Field(default_factory=list)
+    leftbrain_memitems: list[LBMemItem] = Field(default_factory=list)
+
+    # --- VoiceMem追加: 右脳（感情記憶）---
+    rightbrain_independent: Optional[RBIndependent] = None
+    rightbrain_dynamics: list[RBDynamic] = Field(default_factory=list)
+    affective_summary: Optional[AffectiveSummary] = None
+
+    # --- VoiceMem追加: クロスリンク（因果）---
+    cross_links: list[CrossLink] = Field(default_factory=list)
+
+    # --- VoiceMem追加: エピソード文脈 ---
+    episode_context: str = ""   # LLM生成の「この時点までの物語要約（300字以内）"
+
+    def to_director_prompt(self) -> str:
+        """Voice Director へのプロンプト用テキスト生成。"""
+        lines: list[str] = []
+        lines.append(f"【キャラクター】{self.character.name}")
+        if self.rightbrain_independent:
+            rb = self.rightbrain_independent
+            if rb.core_personality:
+                lines.append(f"  本質的性格: {', '.join(rb.core_personality)}")
+            if rb.core_trauma:
+                lines.append(f"  核心トラウマ: {rb.core_trauma}")
+        if self.affective_summary:
+            a = self.affective_summary
+            lines.append(f"  現在の感情: {a.dominant_emotion}(強さ{a.current_state.excitement:.1f})")
+            if a.persistent_mood:
+                lines.append(f"  持続的気分: {a.persistent_mood}")
+        if self.leftbrain_clusters:
+            lines.append("  関連エピソード:")
+            for c in self.leftbrain_clusters[:5]:
+                lines.append(f"    • {c.label}")
+        if self.cross_links:
+            lines.append("  感情の起因:")
+            for link in self.cross_links[:5]:
+                lines.append(f"    • {link.link_type}(強度{link.strength:.1f})")
+        return "\n".join(lines)

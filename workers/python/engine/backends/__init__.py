@@ -10,8 +10,10 @@ import tts_registry
 from backends.edge_backend import EdgeBackend
 from backends.sbv2_backend import Sbv2Backend
 from backends.aivis_backend import AivisBackend
+from backends.irodori_backend import IrodoriBackend
 
 # --- 自動登録 ---
 tts_registry.register_backend("edge", EdgeBackend)
 tts_registry.register_backend("sbv2", Sbv2Backend)
 tts_registry.register_backend("aivis", AivisBackend)
+tts_registry.register_backend("irodori", IrodoriBackend)

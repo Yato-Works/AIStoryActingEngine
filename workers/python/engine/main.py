@@ -402,6 +402,7 @@ def _build_reading_scripts(memory: MemoryEngine, todo: list,
     戻り値: {segment_id: text_reading（全文かな）}
     """
     from reading import ReadingDictionary
+    from reading_judge import ContextReadingJudge, OllamaReadingJudge
     from script_writer import DictionaryScriptWriter, OllamaScriptWriter
 
     dictionary = ReadingDictionary.load_json(_READINGS_PATH)
@@ -435,9 +436,27 @@ def _build_reading_scripts(memory: MemoryEngine, todo: list,
             readings[seg.id] = seg.text_reading
         if result.uncovered:
             print(f"     ⚠ 漢字残留（ch{chunk_index + 1}）: {result.uncovered}")
+
+        # --- Reading Judge: 読みとして正しいかを審査（Performance Judge 思想） ---
+        judge_segments = [(seg.id, seg.text, seg.text_reading)
+                          for seg in result.script.segments]
+        report = ContextReadingJudge().judge(judge_segments)
+        if os.environ.get("READING_JUDGE_LLM"):
+            llm_judge = OllamaReadingJudge(model=model)
+            for seg in result.script.segments:
+                report.issues.extend(
+                    llm_judge.check_meaning(seg.text, seg.text_reading,
+                                            seg.id))
+        for issue in report.issues:
+            print(f"     ⚖ 読み審査 [{issue.kind}] {issue.segment_id}: "
+                  f"{issue.detail}")
+        if report.ok:
+            print(f"     ⚖ 読み審査 ch{chunk_index + 1}: 問題なし")
+
         memory.append_event("READINGS_UPDATED", chunk=chunk_index,
                             segments=len(segs),
-                            new_readings=len(result.new_readings))
+                            new_readings=len(result.new_readings),
+                            judge_issues=len(report.issues))
         print(f"     📜 読み台本 ch{chunk_index + 1}: {len(segs)} セグメント"
               f"（新規読み {len(result.new_readings)}）")
     dictionary.save_json(_READINGS_PATH)

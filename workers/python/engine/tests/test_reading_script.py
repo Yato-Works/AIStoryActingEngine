@@ -392,6 +392,112 @@ class TestReadingScriptArtifact:
         assert doc["judge"] == {"ok": True, "issues": []}
 
 
+# ============================================================================
+# 監査成果物の統合（--resume で部分実行しても本全体を映す）
+# ============================================================================
+
+
+class TestMergeReadingScript:
+    def _doc(self, segments, issues=None):
+        chunks = []
+        for seg in segments:
+            chunks.append((seg["chunk_index"], [
+                ReadingScriptSegment(id=seg["id"], speaker=seg.get("speaker", ""),
+                                     text=seg["text"],
+                                     text_reading=seg["text_reading"])]))
+        return reading_script_doc(chunks, book_id="book", writer="openjtalk",
+                                  judge_issues=issues)
+
+    def test_first_run_passes_new_doc_through(self):
+        new = self._doc([{"id": "seg_000", "chunk_index": 0,
+                          "text": "夕暮れ。", "text_reading": "ユーグレ。"}])
+        assert merge_reading_script_doc(None, new) == new
+        assert merge_reading_script_doc({}, new) == new
+
+    def test_keeps_untouched_segments_from_existing(self):
+        existing = self._doc([
+            {"id": "seg_000", "chunk_index": 0, "text": "一。", "text_reading": "イチ。"},
+            {"id": "seg_001", "chunk_index": 1, "text": "二。", "text_reading": "ニ。"},
+        ])
+        # resume で未合成だった ch2 だけを作り直した状況
+        new = self._doc([{"id": "seg_001", "chunk_index": 1,
+                          "text": "二。", "text_reading": "ニカイ。"}])
+        merged = merge_reading_script_doc(existing, new)
+        by_id = {s["id"]: s["text_reading"] for s in merged["segments"]}
+        assert by_id == {"seg_000": "イチ。", "seg_001": "ニカイ。"}
+        # 並びは (chunk_index, id)
+        assert [s["id"] for s in merged["segments"]] == ["seg_000", "seg_001"]
+
+    def test_keeps_issues_of_untouched_segments(self):
+        class _Issue:
+            kind = "kanji_residue"
+            segment_id = "seg_000"
+            detail = "漢字が残存: 一"
+
+        existing = reading_script_doc(
+            [(0, [ReadingScriptSegment(id="seg_000", text="一。",
+                                       text_reading="一。")])],
+            book_id="book", judge_issues=[_Issue()])
+        new = self._doc([{"id": "seg_001", "chunk_index": 1,
+                          "text": "二。", "text_reading": "ニ。"}])
+        merged = merge_reading_script_doc(existing, new)
+        assert merged["judge"]["ok"] is False
+        assert [i["segment_id"] for i in merged["judge"]["issues"]] == ["seg_000"]
+        assert merged["residue"] == {"seg_000": ["一"]}
+
+    def test_rerun_clears_stale_residue_for_touched_segment(self):
+        existing = reading_script_doc(
+            [(0, [ReadingScriptSegment(id="seg_000", text="千早。",
+                                       text_reading="千早。")])], book_id="book")
+        assert existing["residue"] == {"seg_000": ["千", "早"]}
+        # 辞書修正後に同じセグメントを作り直すと残留は消える
+        new = self._doc([{"id": "seg_000", "chunk_index": 0,
+                          "text": "千早。", "text_reading": "チハヤ。"}])
+        merged = merge_reading_script_doc(existing, new)
+        assert merged["residue"] == {} and merged["judge"]["ok"] is True
+
+    def test_prunes_segments_missing_from_db(self):
+        """再解析で置換されて消えたセグメントは監査ファイルからも落とす。"""
+        existing = self._doc([
+            {"id": "seg_000", "chunk_index": 0, "text": "一。", "text_reading": "イチ。"},
+            {"id": "seg_009", "chunk_index": 1, "text": "九。", "text_reading": "キュウ。"},
+        ])
+        new = self._doc([{"id": "seg_001", "chunk_index": 1,
+                          "text": "二。", "text_reading": "ニ。"}])
+        merged = merge_reading_script_doc(existing, new,
+                                          valid_ids={"seg_000", "seg_001"})
+        assert [s["id"] for s in merged["segments"]] == ["seg_000", "seg_001"]
+
+    def test_pruned_segment_issues_are_not_kept(self):
+        class _Issue:
+            kind = "kanji_residue"
+            segment_id = "seg_009"
+            detail = "漢字が残存: 九"
+
+        existing = reading_script_doc(
+            [(1, [ReadingScriptSegment(id="seg_009", text="九。",
+                                       text_reading="九。")])],
+            book_id="book", judge_issues=[_Issue()])
+        new = self._doc([{"id": "seg_000", "chunk_index": 0,
+                          "text": "一。", "text_reading": "イチ。"}])
+        merged = merge_reading_script_doc(existing, new, valid_ids={"seg_000"})
+        assert merged["judge"] == {"ok": True, "issues": []}
+        assert merged["residue"] == {}
+
+    def test_tracks_writers_and_timestamps(self):
+        existing = self._doc([{"id": "seg_000", "chunk_index": 0,
+                               "text": "一。", "text_reading": "イチ。"}])
+        existing["created_at"] = "2026-01-01T00:00:00+00:00"
+        new = reading_script_doc(
+            [], book_id="book", writer="llm", created_at="2026-01-02T00:00:00+00:00")
+        merged = merge_reading_script_doc(existing, new)
+        assert merged["writers"] == ["llm", "openjtalk"]
+        assert merged["created_at"] == "2026-01-01T00:00:00+00:00"
+        assert merged["updated_at"] == "2026-01-02T00:00:00+00:00"
+        # 統合結果も validate_reading_script を通る
+        assert validate_reading_script(merged) == []
+
+
 class TestReadingScriptMerge:
     """部分再実行（--resume）で監査ファイルを痩せさせない。"""
 
@@ -464,5 +570,26 @@ class TestReadingScriptMerge:
         new = self._doc([self._seg("seg_001", 0, "い", "イ")])
         merged = merge_reading_script_doc(existing, new)
         assert [s["id"] for s in merged["segments"]] == ["seg_001", "seg_009"]
+
+    def test_valid_ids_drop_segments_removed_by_reanalysis(self):
+        """再解析で置き換えられて消えたセグメントの記録は残さない（DB が真実源）。"""
+        existing = self._doc(
+            [self._seg("seg_000", 0, "古い", "フルイ"),
+             self._seg("seg_005", 0, "残る", "ノコル")],
+            issues=[{"kind": "length_drift", "segment_id": "seg_000",
+                     "detail": "古い指摘"}],
+            residue={"seg_000": ["古"]})
+        new = self._doc([self._seg("seg_001", 0, "新しい", "アタラシイ")])
+        merged = merge_reading_script_doc(
+            existing, new, valid_ids={"seg_001", "seg_005"})
+        assert [s["id"] for s in merged["segments"]] == ["seg_001", "seg_005"]
+        assert merged["residue"] == {}
+        assert merged["judge"] == {"ok": True, "issues": []}
+
+    def test_valid_ids_none_keeps_everything(self):
+        existing = self._doc([self._seg("seg_000", 0, "古い", "フルイ")])
+        new = self._doc([self._seg("seg_001", 0, "新しい", "アタラシイ")])
+        merged = merge_reading_script_doc(existing, new, valid_ids=None)
+        assert [s["id"] for s in merged["segments"]] == ["seg_000", "seg_001"]
 
 

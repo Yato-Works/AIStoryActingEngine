@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
+from acting_ir import ActingIR, performance_to_ir
 from analyzer import OllamaStoryAnalyzer, merge_state, normalize_id
 from audio import concat_audio, export_m4b, probe_duration
 from director import CastingDirector, NARRATOR, RuleBasedDirector, CharacterAwareDirector
@@ -315,13 +317,143 @@ def _hve_profile_table(memory: MemoryEngine) -> dict[str, tuple[VoiceProfile, Vo
     return table
 
 
+def _irodori_voices_dir() -> Path:
+    """Irodori-TTS-Server の voices ディレクトリ（環境変数で上書き可）。"""
+    env = os.environ.get("IRODORI_VOICES_DIR")
+    if env:
+        return Path(env)
+    # 既定: AIStoryActingEngine リポジトリの兄弟にある Irodori-TTS-Server/voices
+    return Path(__file__).resolve().parents[4] / "Irodori-TTS-Server" / "voices"
+
+
+_AGE_JA = {"child": "子供の", "young": "若い", "adult": "大人の", "elder": "年配の"}
+_GENDER_JA = {"male": "男性", "female": "女性", "unknown": "中性的"}
+
+
+def _character_caption(ch: Character | None) -> str:
+    """キャラクター像 → Irodori VoiceDesign 用の声の説明文（キャプション）。"""
+    if ch is None:
+        return ("物語の語り手として、聞き手に届く落ち着いた中性的な声で、"
+                "静かに一人で話している。")
+    age = _AGE_JA.get(ch.age, "大人の")
+    gender = _GENDER_JA.get(ch.gender, "中性的")
+    parts = [f"{age}{gender}の声"]
+    if ch.personality:
+        parts.append(f"性格は{'・'.join(ch.personality[:2])}")
+    if ch.emotional_baseline and ch.emotional_baseline != "neutral":
+        parts.append(f"普段から{ch.emotional_baseline}な雰囲気")
+    if ch.speech_style:
+        parts.append(f"話し方は{ch.speech_style}")
+    parts.append("一人で落ち着いて話している")
+    return "。".join(parts) + "。"
+
+
+def _ensure_irodori_voice_refs(memory: MemoryEngine, backend) -> dict[str, str]:
+    """キャラごとの声のリファレンスを確保する（ADR-0006 §6 的な声質固定）。
+
+    VoiceDesign（voice=none + caption）で 1 回だけ声を生成し、
+    Irodori-TTS-Server の voices/{voice_id}.wav として保存する。
+    以降の全セグメントは voice={voice_id} でその声を固定して使う。
+    既にファイルがあるキャラは再生成しない。
+    """
+    voices_dir = _irodori_voices_dir()
+    voices_dir.mkdir(parents=True, exist_ok=True)
+    state = memory.load_state()
+    profiles: dict[str, str] = {}
+    for ch in state.characters.values():
+        if ch.voice is not None:
+            profiles.setdefault(ch.voice.voice_id, _character_caption(ch))
+        if ch.voice_internal is not None:
+            profiles.setdefault(
+                ch.voice_internal.voice_id,
+                _character_caption(ch) + "内面の独り言として、低く静かな声で。")
+    profiles.setdefault(NARRATOR_VOICE.voice_id, _character_caption(None))
+    profiles.setdefault(
+        NARRATOR_VOICE_INTERNAL.voice_id,
+        "物語の語り手の内面の声として、低く静かで落ち着いた中性的な声で話す。")
+
+    refs: dict[str, str] = {}
+    for voice_id, caption in profiles.items():
+        ref = voices_dir / f"{voice_id}.wav"
+        if ref.exists():
+            refs[voice_id] = voice_id
+            continue
+        ir = ActingIR(
+            speaker=voice_id,
+            text="こんにちは。この声で、あなたに物語を届けます。",
+            emotion="neutral",
+            backend_options={"irodori": {"voice": "none", "caption": caption}},
+        )
+        backend.synthesize(ir, ref)
+        refs[voice_id] = voice_id
+        print(f"     🎨 voice ref 作成: {voice_id} → {ref.name}")
+    return refs
+
+
+_READINGS_PATH = Path(__file__).parent / "data" / "readings.json"
+
+
+def _build_reading_scripts(memory: MemoryEngine, todo: list,
+                           model: str) -> dict[str, str]:
+    """Script Writer（台本家AI）で読み台本を作る（ADR-0006）。
+
+    チャンク単位で LLM 呼び出し（1 回/チャンク）。辞書は engine/data/readings.json
+    に永続化され、一度決めた読みは次回以降決定論的に適用される。
+    戻り値: {segment_id: text_reading（全文かな）}
+    """
+    from reading import ReadingDictionary
+    from script_writer import DictionaryScriptWriter, OllamaScriptWriter
+
+    dictionary = ReadingDictionary.load_json(_READINGS_PATH)
+    state = memory.load_state()
+    glossary = {
+        ch.name: f"{ch.role or '登場人物'}。"
+                 f"性格: {'・'.join(ch.personality[:3]) or '?'}。"
+                 f"話し方: {ch.speech_style or '?'}"
+        for ch in state.characters.values()
+    }
+    writer = OllamaScriptWriter(model=model)
+
+    by_chunk: dict[int, list] = {}
+    for seg in todo:
+        by_chunk.setdefault(seg.chunk_index, []).append(seg)
+
+    readings: dict[str, str] = {}
+    for chunk_index, segs in sorted(by_chunk.items()):
+        payload = [{"id": s.id, "speaker": s.speaker, "text": s.text}
+                   for s in segs]
+        try:
+            result = writer.write_script(payload, dictionary, glossary,
+                                         chunk_index)
+        except Exception as exc:
+            print(f"     ⚠ Script Writer 失敗（ch{chunk_index + 1}）: {exc}"
+                  " → 辞書適用のみで継続")
+            result = DictionaryScriptWriter().write_script(
+                payload, dictionary, glossary, chunk_index)
+        dictionary.update_many(result.new_readings)
+        for seg in result.script.segments:
+            readings[seg.id] = seg.text_reading
+        if result.uncovered:
+            print(f"     ⚠ 漢字残留（ch{chunk_index + 1}）: {result.uncovered}")
+        memory.append_event("READINGS_UPDATED", chunk=chunk_index,
+                            segments=len(segs),
+                            new_readings=len(result.new_readings))
+        print(f"     📜 読み台本 ch{chunk_index + 1}: {len(segs)} セグメント"
+              f"（新規読み {len(result.new_readings)}）")
+    dictionary.save_json(_READINGS_PATH)
+    return readings
+
+
 def synthesize_all(memory: MemoryEngine, provider_name: str = "edge",
                    resume: bool = False, report=None, should_stop=None,
-                   hve: bool = False) -> int:
+                   hve: bool = False, reading: bool = False) -> int:
     """未合成セグメントを TTS（Job System の tts Step の本体）。
 
     hve=True で Human Voice Engine（3.5M）経由: Performance + VoiceProfile/State +
     Breath Engine で「演じてから」合成する（出力は常に .wav）。
+    provider_name="irodori" で Backend 経由（ADR-0005/0006）:
+    読み台本 + キャプション演技 + キャラ声リファレンス固定で合成する。
+    reading=True で Script Writer（台本家AI）による全文かな台本を使う。
     report(progress, checkpoint) で 1 セグメントごとに進捗を通知する。
     should_stop() が True を返すと JobCancelled（協調的キャンセル）。
     戻り値は新規合成したセグメント数。done-set（segments.audio_path）が
@@ -330,8 +462,26 @@ def synthesize_all(memory: MemoryEngine, provider_name: str = "edge",
     out_dir = OUT_DIR / memory.book_id
     audio_dir = out_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
-    provider = get_provider(provider_name)
-    use_hve = hve
+
+    use_backend = provider_name == "irodori"
+    use_hve = hve and not use_backend
+    if hve and use_backend:
+        print("  ⚠ --hve は irodori では未対応のため通常の Backend 合成に切り替えます")
+    provider = None
+    backend = None
+    voice_refs: dict[str, str] = {}
+    readings: dict[str, str] = {}
+    if use_backend:
+        from tts import get_backend
+        backend = get_backend("irodori")
+        voice_refs = _ensure_irodori_voice_refs(memory, backend)
+        if reading:
+            segments_all = memory.load_segments()
+            pending = [s for s in segments_all if s.performance]
+            readings = _build_reading_scripts(memory, pending,
+                                              model="qwen3:4b")
+    else:
+        provider = get_provider(provider_name)
     _hve_profiles = _hve_profile_table(memory) if use_hve else {}
     judge = None
     if use_hve:
@@ -341,14 +491,22 @@ def synthesize_all(memory: MemoryEngine, provider_name: str = "edge",
     segments = memory.load_segments()
     done_audio = memory.audio_done() if resume else set()
     todo = [s for s in segments if s.id not in done_audio and s.performance]
-    ext = ".wav" if use_hve else getattr(provider, "ext", ".mp3")
+    ext = ".wav" if (use_hve or use_backend) else getattr(provider, "ext", ".mp3")
     tone_cache: dict[int, str] = {}  # chunk_index -> scene tone (3.5Q)
     prev_emotion: str | None = None  # 3.5R: continuity 審査用
     for i, seg in enumerate(todo, 1):
         if should_stop is not None and should_stop():
             raise JobCancelled("tts をキャンセル")
         clip = audio_dir / f"{seg.id}{ext}"
-        if use_hve:
+        if use_backend:
+            ir = performance_to_ir(seg.text, seg.performance)
+            iro = ir.backend_options.setdefault("irodori", {})
+            iro["voice"] = voice_refs.get(seg.performance.voice, "none")
+            text_reading = readings.get(seg.id)
+            if text_reading:
+                iro["text_reading"] = text_reading
+            backend.synthesize(ir, clip)
+        elif use_hve:
             tone = tone_cache.get(seg.chunk_index)
             if tone is None:
                 tone = memory.scene_tone(seg.chunk_index)
@@ -362,10 +520,14 @@ def synthesize_all(memory: MemoryEngine, provider_name: str = "edge",
         else:
             provider.synthesize(seg.text, seg.performance, clip)  # type: ignore[arg-type]
         memory.set_audio(seg.id, str(clip))
-        memory.append_event("AUDIO_GENERATED", segment=seg.id, hve=use_hve)
+        memory.append_event("AUDIO_GENERATED", segment=seg.id,
+                            backend="irodori" if use_backend else None,
+                            hve=use_hve, reading=seg.id in readings)
         if report:
             report(i, {"segment": seg.id})
-    print(f"  🎙 TTS({provider.name}{' + HVE' if use_hve else ''}): "
+    label = "irodori(backend)" if use_backend else provider.name
+    print(f"  🎙 TTS({label}{' + HVE' if use_hve else ''}"
+          f"{' + 読み台本' if readings else ''}): "
           f"{len(todo)} セグメント新規合成（DB記録済み {len(done_audio)}）")
     return len(todo)
 
@@ -411,7 +573,8 @@ def export_audio(memory: MemoryEngine) -> list[tuple[str, str]]:
 
 
 def produce(memory: MemoryEngine, provider_name: str = "edge", resume: bool = False,
-            no_tts: bool = False, hve: bool = False) -> None:
+            no_tts: bool = False, hve: bool = False,
+            reading: bool = False) -> None:
     """契約 JSON エクスポート → TTS → 連結（DB が唯一の情報源）。"""
     out_dir = OUT_DIR / memory.book_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -420,13 +583,15 @@ def produce(memory: MemoryEngine, provider_name: str = "edge", resume: bool = Fa
     print(f"  ✓ performance.json / characters.json / story_state.json 保存（{exported} セグメント, 検証OK）")
 
     if not no_tts:
-        synthesize_all(memory, provider_name, resume=resume, hve=hve)
+        synthesize_all(memory, provider_name, resume=resume, hve=hve,
+                       reading=reading)
     export_audio(memory)
 
 
 def run_pipeline_job(novel_path: Path, provider_name: str = "edge",
                      resume: bool = False, no_tts: bool = False,
                      model: str = "qwen3:4b", hve: bool = False,
+                     reading: bool = False,
                      should_stop=None) -> MemoryEngine:
     """小説処理を pipeline Job（analyze → tts → export）として実行する（ADR-0003）。
 
@@ -439,7 +604,8 @@ def run_pipeline_job(novel_path: Path, provider_name: str = "edge",
     jm = JobManager(memory)
     job_id, resumed = jm.resume_or_create(
         "pipeline", {"provider": provider_name, "model": model,
-                     "novel": str(novel_path), "no_tts": no_tts, "hve": hve})
+                     "novel": str(novel_path), "no_tts": no_tts, "hve": hve,
+                     "reading": reading})
     if resumed:
         recovered = jm.recover_running_steps(job_id)
         print(f"♻ Job {job_id} を再開"
@@ -467,7 +633,7 @@ def run_pipeline_job(novel_path: Path, provider_name: str = "edge",
                         lambda report: synthesize_all(memory, provider_name,
                                                       resume=resume, report=report,
                                                       should_stop=should_stop,
-                                                      hve=hve),
+                                                      hve=hve, reading=reading),
                         progress_total=memory.count_segments())
         check()
         jm.run_step(job_id, 3, "export",
@@ -544,8 +710,12 @@ def main() -> None:
     _setup_stdio()
     ap = argparse.ArgumentParser(description="AIStoryActingEngine Phase 2")
     ap.add_argument("novel", nargs="?", type=Path, help="小説テキストファイル")
-    ap.add_argument("--provider", default="edge", choices=["edge", "aivis", "sbv2"],
-                    help="sbv2 は Style-Bert-VITS2 サーバ (localhost:5000) 必須")
+    ap.add_argument("--provider", default="edge",
+                    choices=["edge", "aivis", "sbv2", "irodori"],
+                    help="irodori は Irodori-TTS-Server (localhost:8088) 必須。"
+                         "ADR-0005/0006 の Backend 経由で合成する")
+    ap.add_argument("--reading", action="store_true",
+                    help="Script Writer（台本家AI）で全文かなの読み台本を作ってから合成する（irodori 用・ADR-0006）")
     ap.add_argument("--model", default="qwen3:4b")
     ap.add_argument("--no-tts", action="store_true")
     ap.add_argument("--resume", action="store_true", help="DB の進捗から再開")
@@ -571,12 +741,13 @@ def main() -> None:
     if args.job:
         memory = run_pipeline_job(args.novel, provider_name=args.provider,
                                   resume=args.resume, no_tts=args.no_tts,
-                                  model=args.model, hve=args.hve)
+                                  model=args.model, hve=args.hve,
+                                  reading=args.reading)
     else:
         memory = run(args.novel, provider_name=args.provider, resume=args.resume,
                      no_tts=args.no_tts, model=args.model)
         produce(memory, provider_name=args.provider, resume=args.resume,
-                no_tts=args.no_tts, hve=args.hve)
+                no_tts=args.no_tts, hve=args.hve, reading=args.reading)
     show_stats(memory)
 
 

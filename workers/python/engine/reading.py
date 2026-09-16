@@ -370,7 +370,8 @@ def load_reading_script(path: str | Path) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
-def merge_reading_script_doc(existing: dict | None, new: dict) -> dict:
+def merge_reading_script_doc(existing: dict | None, new: dict,
+                             valid_ids: set[str] | None = None) -> dict:
     """既存の読み台本と今回分を統合する（部分再実行で監査ファイルを痩せさせない）。
 
     再開実行（--resume）では未合成セグメントだけが台本の対象になる。
@@ -380,6 +381,8 @@ def merge_reading_script_doc(existing: dict | None, new: dict) -> dict:
     Args:
         existing: 既存の reading_script.json（無ければ None / {}）
         new: 今回の実行で作ったドキュメント
+        valid_ids: DB に現存するセグメント ID。指定すると、再解析で置き換えられて
+            消えたセグメントの記録は落とす（監査ファイルを DB と一致させる）。
     Returns:
         dict: 統合済みドキュメント。並びは (chunk_index, id) 順。
     """
@@ -397,6 +400,11 @@ def merge_reading_script_doc(existing: dict | None, new: dict) -> dict:
         if sid:
             merged[sid] = seg
             replaced.add(sid)
+    removed: set[str] = set()
+    if valid_ids is not None:
+        removed = {sid for sid in merged if sid not in valid_ids}
+        for sid in removed:
+            merged.pop(sid, None)
 
     def _order(seg: dict) -> tuple[int, str]:
         try:
@@ -409,15 +417,17 @@ def merge_reading_script_doc(existing: dict | None, new: dict) -> dict:
     out["segments"] = sorted(merged.values(), key=_order)
 
     # 残したセグメントの審査結果・漢字残留はそのまま維持する
+    # （今回置き換えた分と、存在しなくなった分は引き継がない）
+    stale = replaced | removed
     new_judge = new.get("judge") or {}
     kept_issues = [i for i in (existing.get("judge") or {}).get("issues") or []
-                   if str(i.get("segment_id") or "") not in replaced]
+                   if str(i.get("segment_id") or "") not in stale]
     issues = kept_issues + list(new_judge.get("issues") or [])
     out["judge"] = {"ok": not issues, "issues": issues}
 
     residue = {sid: chars
                for sid, chars in (existing.get("residue") or {}).items()
-               if sid not in replaced}
+               if sid not in stale}
     residue.update(new.get("residue") or {})
     out["residue"] = dict(sorted(residue.items()))
 

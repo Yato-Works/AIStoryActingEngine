@@ -57,6 +57,34 @@ class JobCancelled(JobSystemError):
     """cancel_job による協調的キャンセル（FAILED ではなく CANCELLED 遷移）。"""
 
 
+def normalize_artifacts(artifact, step_name: str = "?") -> list[tuple[str, str]]:
+    """Step の戻り値を `(kind, path)` のリストに正規化する。
+
+    受け付ける形:
+        None / []                        → 成果物なし
+        (kind, path)                     → 1 件
+        [(kind, path), ...]              → 複数件
+
+    形が違う場合は、どの Step が何を返したかを示す ValueError を投げる。
+    以前は `for kind, path in arts` が生の TypeError
+    （cannot unpack non-iterable int object）になり、実機で原因が
+    分からないまま Job が失敗していた（tts Step が合成件数を返していた）。
+    """
+    if artifact is None or artifact == []:
+        return []
+    items = artifact if isinstance(artifact, list) else [artifact]
+    out: list[tuple[str, str]] = []
+    for item in items:
+        if (isinstance(item, (tuple, list)) and len(item) == 2
+                and all(isinstance(x, str) for x in item)):
+            out.append((item[0], item[1]))
+        else:
+            raise ValueError(
+                f"step {step_name} の戻り値が (kind, path) の形ではありません: "
+                f"{item!r}（成果物なしなら None を返してください）")
+    return out
+
+
 class JobManager:
     """jobs / job_steps / job_artifacts を管理する。
 
@@ -227,9 +255,7 @@ class JobManager:
         try:
             artifact = fn(report)
             self.finish_step(job_id, seq)
-            arts = artifact if isinstance(artifact, list) else (
-                [artifact] if artifact else [])
-            for kind, path in arts:
+            for kind, path in normalize_artifacts(artifact, name):
                 self.add_artifact(job_id, seq, kind, path)
         except Exception as exc:
             self.finish_step(job_id, seq, error=str(exc))

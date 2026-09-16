@@ -509,7 +509,9 @@ def _build_reading_scripts(memory: MemoryEngine, todo: list,
                 previous = load_reading_script(script_json)
             except (OSError, ValueError):
                 previous = None
-        doc = merge_reading_script_doc(previous, doc)
+        # 存在しなくなったセグメント（再解析で置換済み）を残さない
+        valid_ids = {seg.id for seg in memory.load_segments()}
+        doc = merge_reading_script_doc(previous, doc, valid_ids=valid_ids)
         json_path, txt_path = save_reading_script(out_dir, doc)
         print(f"     📄 読み台本を保存: {txt_path.name}"
               f"（{len(doc['segments'])} セグメント）")
@@ -701,11 +703,14 @@ def run_pipeline_job(novel_path: Path, provider_name: str = "edge",
             jm.finish_step(job_id, 2, skip=True)
             print("  ⏭ step 2(tts) は no-tts 指定のためスキップ")
         else:
-            jm.run_step(job_id, 2, "tts",
-                        lambda report: synthesize_all(memory, provider_name,
-                                                      resume=resume, report=report,
-                                                      should_stop=should_stop,
-                                                      hve=hve, reading=reading),
+            def _run_tts(report):
+                synthesize_all(memory, provider_name, resume=resume,
+                               report=report, should_stop=should_stop,
+                               hve=hve, reading=reading)
+                # Step の成果物は (kind, path) のみ（jobs.normalize_artifacts）
+                return [("audio_dir", str(OUT_DIR / memory.book_id / "audio"))]
+
+            jm.run_step(job_id, 2, "tts", _run_tts,
                         progress_total=memory.count_segments())
         check()
         jm.run_step(job_id, 3, "export",

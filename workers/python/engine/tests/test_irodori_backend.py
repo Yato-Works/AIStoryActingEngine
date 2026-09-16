@@ -119,6 +119,7 @@ def _mock_httpx_post():
         captured["url"] = url
         captured["json"] = json
         captured["headers"] = headers
+        captured["timeout"] = timeout
         resp = MagicMock()
         resp.content = b"RIFF....WAV"
         resp.raise_for_status = lambda: None
@@ -205,4 +206,41 @@ class TestIrodoriSynthesize:
         with patcher:
             backend.synthesize(ir, out)
         assert out.read_bytes() == b"RIFF....WAV"
+
+    def test_chunking_disabled_via_env(self, tmp_path, monkeypatch):
+        # サーバー側の分割合成（無音なし結合による「かくかく」対策）:
+        # IRODORI_CHUNKING=0 で chunking_enabled=False を送る
+        monkeypatch.setenv("IRODORI_CHUNKING", "0")
+        backend = IrodoriBackend()
+        ir = ActingIR(speaker="v", text="t")
+        patcher, captured = _mock_httpx_post()
+        with patcher:
+            backend.synthesize(ir, tmp_path / "x.wav")
+        assert captured["json"]["irodori"]["chunking_enabled"] is False
+
+    def test_chunking_option_overrides_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("IRODORI_CHUNKING", "1")
+        backend = IrodoriBackend()
+        ir = ActingIR(speaker="v", text="t",
+                      backend_options={"irodori": {
+                          "server": {"chunking_enabled": False}}})
+        patcher, captured = _mock_httpx_post()
+        with patcher:
+            backend.synthesize(ir, tmp_path / "x.wav")
+        # 明示オプションが環境変数より強い
+        assert captured["json"]["irodori"]["chunking_enabled"] is False
+
+    def test_timeout_from_env(self, monkeypatch):
+        monkeypatch.setenv("IRODORI_TIMEOUT", "900")
+        assert IrodoriBackend().timeout == 900.0
+        assert IrodoriBackend(timeout=30.0).timeout == 30.0
+
+    def test_timeout_sent_to_httpx(self, tmp_path):
+        backend = IrodoriBackend(timeout=777.0)
+        ir = ActingIR(speaker="v", text="t")
+        patcher, captured = _mock_httpx_post()
+        with patcher:
+            backend.synthesize(ir, tmp_path / "x.wav")
+        assert captured["timeout"] == 777.0
+
 

@@ -133,14 +133,18 @@ class IrodoriBackend(TTSBackend):
                  model: str = "irodori-tts",
                  default_voice: str = "none",
                  response_format: str = "wav",
-                 timeout: float = 600.0) -> None:
+                 timeout: float | None = None) -> None:
         self.base_url = (host or os.environ.get(
             "IRODORI_HOST", "http://127.0.0.1:8088")).rstrip("/")
         self.api_key = api_key or os.environ.get("IRODORI_API_KEY")
         self.model = model
         self.default_voice = default_voice
         self.response_format = response_format
-        self.timeout = timeout
+        # GPU 飽和時（デスクトップアプリが VRAM を占有）は 1 合成に
+        # 数分かかることがある。IRODORI_TIMEOUT 秒で調整できる。
+        self.timeout = float(
+            timeout if timeout is not None
+            else os.environ.get("IRODORI_TIMEOUT", "600"))
 
     def manifest(self) -> BackendManifest:
         return _MANIFEST
@@ -206,6 +210,17 @@ class IrodoriBackend(TTSBackend):
             text = f"{text}{EMOTION_EMOJI[ir.emotion]}"
 
         # --- リクエスト構築 ---
+        # server_opts で IrodoriOptions を透過制御できる。
+        # 特に chunking_enabled/chunk_min_chars はサーバー側のテキスト分割合成
+        # （既定 min_chars=80、「、」でも分割）の制御に使う。サーバーは分割
+        # チャンクを無音なしで連結するため、文節の継ぎ目が硬く聞こえる
+        # （「かくかく」症状）場合は chunking_enabled=False で無効化できる。
+        server_opts: dict = dict(opts.get("server") or {})
+        if "chunking_enabled" not in server_opts:
+            env_chunk = os.environ.get("IRODORI_CHUNKING")
+            if env_chunk is not None:
+                server_opts["chunking_enabled"] = env_chunk.strip() in (
+                    "1", "true", "yes", "on")
         body: dict = {
             "model": self.model,
             "input": text,
@@ -215,7 +230,7 @@ class IrodoriBackend(TTSBackend):
             "speed": speed,
             "irodori": {
                 "caption": caption,
-                **(opts.get("server") or {}),
+                **server_opts,
             },
         }
 

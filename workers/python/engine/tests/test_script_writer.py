@@ -54,8 +54,8 @@ class TestOllamaScriptWriter:
             result = writer.write_script(SEGMENTS, ReadingDictionary())
         segs = {s.id: s for s in result.script.segments}
         assert segs["seg_001"].text_reading == "ゆうぐれのまちを、かれはあるいていた。"
-        # 提案された readings が text_reading に即座に反映される
-        assert segs["seg_002"].text_reading == "わたしはちはやです。"
+        # 提案された readings が text_reading に即座に反映される（カタカナ注入）
+        assert segs["seg_002"].text_reading == "わたしはチハヤです。"
         assert result.new_readings == {"千早": "ちはや"}
         assert result.uncovered == {}
 
@@ -82,8 +82,11 @@ class TestOllamaScriptWriter:
             result = writer.write_script(
                 SEGMENTS, ReadingDictionary({"千早": "せんそう"}))
         # プロンプト時点で辞書読みが適用されている（「私」は辞書に無いため漢字のまま）
-        assert "私はせんそうです。" in captured["prompt"]
+        # 読みはカタカナ注入（後段の G2P 再解析で読みが壊れないように）
+        assert "私はセンソウです。" in captured["prompt"]
         segs = {s.id: s for s in result.script.segments}
+        # LLM ライター経路は G2P を通さないため、LLM が返した表記がそのまま残る
+        # （このモックはひらがなで返している）。
         assert segs["seg_002"].text_reading == "わたしはせんそうです。"
         # 原文は漢字のまま保持される
         assert segs["seg_002"].text == "私は千早です。"
@@ -99,7 +102,7 @@ class TestOllamaScriptWriter:
                 SEGMENTS, ReadingDictionary({"千早": "ちはや"}))
         segs = {s.id: s for s in result.script.segments}
         # フォールバックは辞書適用のみ（「私」は辞書に無いので漢字が残る）
-        assert segs["seg_002"].text_reading == "私はちはやです。"
+        assert segs["seg_002"].text_reading == "私はチハヤです。"
         assert result.uncovered == {"seg_002": ["私"]}
 
     def test_ollama_payload_shape(self):

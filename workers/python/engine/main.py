@@ -336,23 +336,92 @@ def _irodori_voices_dir() -> Path:
 _AGE_JA = {"child": "子供の", "young": "若い", "adult": "大人の", "elder": "年配の"}
 _GENDER_JA = {"male": "男性", "female": "女性", "unknown": "中性的"}
 
+# 感情・性格・話し方のラベル → 日本語の形容（VoiceDesign キャプション用）。
+# analyzer は英語の enum（tender / anxious / calm …）を返すため、
+# そのまま caption に埋めると VoiceDesign への指示文が壊れる
+# （実測: 「性格はtender・anxious。話し方はcasual。」で参照音声の沈黙が 30% に増え、
+#  その「途切れる話し方」がクローンされて生成音声が単語ごとに止まった）。
+_EMOTION_JA = {
+    "neutral": "落ち着いた", "calm": "穏やかな", "happy": "明るい",
+    "sad": "悲しげな", "angry": "怒りっぽい", "fearful": "怯えやすい",
+    "anxious": "不安げな", "surprised": "驚きやすい", "sarcastic": "皮肉っぽい",
+    "tender": "優しい", "awkward": "不器用な", "playful": "遊び心のある",
+    "serious": "真面目な", "shy": "内気な", "cheerful": "快活な",
+    "quiet": "物静かな", "kind": "親切な", "gentle": "柔らかな",
+    "proud": "気高い", "cool": "冷静な", "sweet": "甘い",
+}
+_SPEECH_STYLE_JA = {
+    "polite": "丁寧で落ち着いた", "casual": "くだけた自然な",
+    "rough": "荒っぽい", "formal": "かしこまった",
+    "cheerful": "明るく元気な", "quiet": "静かで控えめな",
+    "gentle": "優しく柔らかい", "monotone": "抑揚を抑えた",
+    "energetic": "勢いのある", "shy": "小さく控えめな",
+    "childish": "あどけない", "mature": "落ち着いた大人びた",
+}
+
+
+def _ja_tags(values, table: dict[str, str], limit: int = 2) -> list[str]:
+    """英語ラベル列を日本語の形容へ変換する。
+
+    未知のラベルは捨てる（英単語をキャプションに漏らさないため）。
+    既に日本語（非 ASCII）のラベルはそのまま活かす。
+    """
+    out: list[str] = []
+    for raw in values or []:
+        key = str(raw or "").strip().lower()
+        if not key:
+            continue
+        if key in table:
+            label = table[key]
+        elif any(ord(c) > 0x7F for c in key):
+            label = key            # 日本語で書かれたタグはそのまま使える
+        else:
+            continue               # 英単語の正体不明タグは出さない
+        if label not in out:
+            out.append(label)
+    return out[:limit]
+
 
 def _character_caption(ch: Character | None) -> str:
-    """キャラクター像 → Irodori VoiceDesign 用の声の説明文（キャプション）。"""
+    """キャラクター像 → Irodori VoiceDesign 用の声の説明文（キャプション）。
+
+    自然な日本語の指示文にすること。英語ラベル（tender 等）は
+    VoiceDesign の条件付けを壊し、参照音声の話し方が途切れがちになる。
+    """
     if ch is None:
         return ("物語の語り手として、聞き手に届く落ち着いた中性的な声で、"
                 "静かに一人で話している。")
     age = _AGE_JA.get(ch.age, "大人の")
     gender = _GENDER_JA.get(ch.gender, "中性的")
     parts = [f"{age}{gender}の声"]
-    if ch.personality:
-        parts.append(f"性格は{'・'.join(ch.personality[:2])}")
-    if ch.emotional_baseline and ch.emotional_baseline != "neutral":
-        parts.append(f"普段から{ch.emotional_baseline}な雰囲気")
-    if ch.speech_style:
-        parts.append(f"話し方は{ch.speech_style}")
+    traits = _ja_tags(ch.personality, _EMOTION_JA)
+    if traits:
+        parts.append(f"性格は{'・'.join(traits)}")
+    baseline = _ja_tags([ch.emotional_baseline], _EMOTION_JA)
+    if baseline and ch.emotional_baseline != "neutral":
+        parts.append(f"普段から{baseline[0]}雰囲気")
+    style = _ja_tags([ch.speech_style], _SPEECH_STYLE_JA)
+    if style:
+        parts.append(f"話し方は{style[0]}")
     parts.append("一人で落ち着いて話している")
     return "。".join(parts) + "。"
+
+
+# 声リファレンス生成の素材（実測に基づく）:
+# 短い一文のリファレンスは「ためらいがちな喋り方」ごとクローンされ、
+# 生成音声が単語ごとに止まって聞こえる（prosody 実験: 沈黙 1.56s vs 0.42s）。
+# そこで複数文の長めの本文 + 「滑らかで自然な速さ」の指示で作る。
+_VOICE_REF_TEXT = (
+    "こんにちは。この声で、あなたに物語を届けます。"
+    "今日は少し長い文章を、自然な速さで読んでみます。"
+    "言葉と言葉のつながりを大切に、滑らかに話していきます。"
+    "静かな場面では優しく、場面が動くときは少しだけ力を込めて。"
+    "朝の光が窓を照らし、街はゆっくりと動き始めます。"
+    "どうぞ最後まで、お耳を澄ませて聞いてください。"
+)
+_VOICE_REF_CAPTION_SUFFIX = "自然な速さで滑らかに、途切れなく話す"
+# これ未満の長さのリファレンスは質が足りないとみなして作り直す（秒）
+_VOICE_REF_MIN_SECONDS = 10.0
 
 
 def _ensure_irodori_voice_refs(memory: MemoryEngine, backend) -> dict[str, str]:
@@ -361,7 +430,11 @@ def _ensure_irodori_voice_refs(memory: MemoryEngine, backend) -> dict[str, str]:
     VoiceDesign（voice=none + caption）で 1 回だけ声を生成し、
     Irodori-TTS-Server の voices/{voice_id}.wav として保存する。
     以降の全セグメントは voice={voice_id} でその声を固定して使う。
-    既にファイルがあるキャラは再生成しない。
+
+    リファレンスは「声質」だけでなく「喋り方」もクローンされるため、
+    複数文を自然な速さで読んだ長めの音声から作る（実測に基づく。
+    短い一文のリファレンスだと単語ごとに止まる喋り方になる）。
+    既存ファイルが基準長（_VOICE_REF_MIN_SECONDS）に満たなければ作り直す。
     """
     voices_dir = _irodori_voices_dir()
     voices_dir.mkdir(parents=True, exist_ok=True)
@@ -379,21 +452,28 @@ def _ensure_irodori_voice_refs(memory: MemoryEngine, backend) -> dict[str, str]:
         NARRATOR_VOICE_INTERNAL.voice_id,
         "物語の語り手の内面の声として、低く静かで落ち着いた中性的な声で話す。")
 
+    force = bool(os.environ.get("IRODORI_REGEN_VOICES"))
     refs: dict[str, str] = {}
     for voice_id, caption in profiles.items():
         ref = voices_dir / f"{voice_id}.wav"
-        if ref.exists():
-            refs[voice_id] = voice_id
-            continue
+        if ref.exists() and not force:
+            duration = probe_duration(ref)
+            if duration is not None and duration >= _VOICE_REF_MIN_SECONDS:
+                refs[voice_id] = voice_id
+                continue
+        smooth_caption = f"{caption}{_VOICE_REF_CAPTION_SUFFIX}。"
         ir = ActingIR(
             speaker=voice_id,
-            text="こんにちは。この声で、あなたに物語を届けます。",
+            text=_VOICE_REF_TEXT,
             emotion="neutral",
-            backend_options={"irodori": {"voice": "none", "caption": caption}},
+            backend_options={"irodori": {"voice": "none",
+                                         "caption": smooth_caption}},
         )
         backend.synthesize(ir, ref)
         refs[voice_id] = voice_id
-        print(f"     🎨 voice ref 作成: {voice_id} → {ref.name}")
+        duration = probe_duration(ref)
+        length = f"（{duration:.1f}s）" if duration else ""
+        print(f"     🎨 voice ref 作成: {voice_id} → {ref.name}{length}")
     return refs
 
 

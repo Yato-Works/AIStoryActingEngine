@@ -181,14 +181,18 @@ class TestReadingScript:
         assert script.uncovered_kanji() == {}
 
     def test_apply_dictionary_converts_llm_leftover_kanji(self):
-        """LLM が漢字表記を残していても、最終適用で辞書が変換する（ADR-0006 §3）。"""
+        """LLM が漢字表記を残していても、最終適用で辞書が変換する（ADR-0006 §3）。
+
+        読みはカタカナで注入される（ひらがなだと後段の G2P が再解析して
+        「ちはや」→「チワヤ」と壊す事故が実機で起きた。ADR-0006 §7）。
+        """
         script = ReadingScript(segments=[
             ReadingScriptSegment(
                 id="seg_001", text="千早と申します。",
                 text_reading="千早と申します。"),  # LLM が漢字を残した
         ])
         script.apply_dictionary(ReadingDictionary({"千早": "ちはや"}))
-        assert script.segments[0].text_reading == "ちはやと申します。"
+        assert script.segments[0].text_reading == "チハヤと申します。"
 
     def test_original_text_is_preserved(self):
         """原文は失われない（ADR-0006 §1）。"""
@@ -278,7 +282,9 @@ class TestDictionaryScriptWriter:
             chunk_index=0,
         )
         seg = result.script.segments[0]
-        assert seg.text_reading == "ちはやがはりつけを剥がす"
+        # 辞書の読みはカタカナで注入される（ADR-0006 §7）。
+        # 原文由来の助詞（が・を）はそのまま残る。
+        assert seg.text_reading == "チハヤがハリツケを剥がす"
         # 「剥」は辞書に無いので uncovered に報告される
         assert result.uncovered == {"seg_001": ["剥"]}
         # 原文は保持される

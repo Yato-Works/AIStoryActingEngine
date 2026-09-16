@@ -43,6 +43,22 @@ Acting IR から Backend パラメータへの変換時、Backend が未対応�
 `VoiceProfile` に `backend_profiles: dict[str, dict]` を追加。
 キャラクターごとに各 Backend でのモデル・スタイル設定を保持し、作品再生中は原則として 1 キャラ 1 Backend を固定して声質の連続性を守る。
 
+## Update 2026-09-16: Voice Reference Quality — 声質だけでなく「喋り方」もクローンされる
+
+実機検証（prosody 実験）で、ゼロショット音声クローニングはリファレンスの
+**話し方（速度・間の取り方）まで忠実に真似る**ことが判明した。
+VoiceDesign で作った短い一文（約 5 秒・ゆっくり目）のリファレンスを使うと、
+その「ためらいがちな喋り方」ごとクローンされ、生成音声が単語ごとに
+止まって聞こえる（実測: 発話内沈黙 1.56s → 適正リファレンスで 0.42s）。
+
+不変条件:
+
+- 声リファレンスは**複数文を自然な速さで滑らかに読んだ長めの音声**から作る
+  （`_VOICE_REF_TEXT` / `_VOICE_REF_CAPTION_SUFFIX`）。
+- リファレンスの長さが基準（10 秒）未満なら自動で作り直す
+  （`IRODORI_REGEN_VOICES=1` で強制再生成も可）。
+- Irodori v4.1 公式の推奨（30 秒以上の参照音声）とも整合する。
+
 ## Consequences
 
 - **安定性**: Engine Core は遅く・安定して進化し、Backend Adapter は速く・最新モデルに追従できる。

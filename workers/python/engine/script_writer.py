@@ -17,7 +17,7 @@ from typing import Protocol
 from pydantic import BaseModel, Field
 
 from reading import (
-    ReadingDictionary, ReadingScript, ReadingScriptSegment,
+    ReadingDictionary, ReadingScript, ReadingScriptSegment, to_katakana,
 )
 
 # ============================================================================
@@ -89,15 +89,17 @@ def _prepare_segments(segments: list[dict],
                       dictionary: ReadingDictionary) -> list[dict]:
     """セグメントの text に辞書を先に適用する（ADR-0006 §3）。
 
-    辞書に登録済みの表記は LLM に渡る時点で既にかな化されているため、
-    「辞書が LLM より強い」ことが構造的に保証される。
+    辞書に登録済みの表記は G2P に渡る時点で既にかな化されているため、
+    「辞書が G2P より強い」ことが構造的に保証される。
+    読みは **カタカナ** で注入する（ひらがなだと OpenJTalk が再解析して
+    「ちはや」を「チワヤ」と読む事故が実機で発生した。reading.apply_kana 参照）。
     原文は `_text_original` に退避し、ReadingScript にはそちらを保存する。
     """
     prepared: list[dict] = []
     for seg in segments:
         seg = dict(seg)
         seg["_text_original"] = str(seg.get("text", ""))
-        seg["text"] = dictionary.apply(str(seg.get("text", "")))
+        seg["text"] = dictionary.apply_kana(str(seg.get("text", "")))
         prepared.append(seg)
     return prepared
 
@@ -143,7 +145,7 @@ def _build_result(
             speaker=str(seg.get("speaker", "")),
             text=str(seg.get("_text_original", seg.get("text", ""))),
             # LLM が id を欠落・誤記した場合のフォールバックは辞書適用のみ
-            text_reading=norm.apply(by_id.get(sid, "")) or norm.apply(
+            text_reading=norm.apply_kana(by_id.get(sid, "")) or norm.apply_kana(
                 str(seg.get("text", ""))),
         ))
 

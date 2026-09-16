@@ -37,6 +37,33 @@ def kanji_residue(text: str) -> list[str]:
 
 
 # ============================================================================
+# かな正規化（カタカナ注入）
+# ============================================================================
+
+# ひらがな (U+3041〜U+3096) とカタカナ (U+30A1〜U+30F6) は Unicode 上 0x60 ずれ。
+# 手書きの対応表は小書き文字（ぇ・ゖ など）を落として壊れやすいため、
+# コードポイントの規則性から機械的に生成する。
+_KANA_OFFSET = 0x30A1 - 0x3041
+_HIRA_TO_KATA = {c: c + _KANA_OFFSET for c in range(0x3041, 0x3097)}
+
+
+def to_katakana(reading: str) -> str:
+    """読みをカタカナへ正規化する（G2P 前処理用）。
+
+    カタカナは表音的に読まれるため、OpenJTalk の再解析で読みが壊れない。
+    実機事故（2026-09-16）: 「千早」を **ひらがな** で注入したところ、
+    OpenJTalk が注入後の文字列を再解析し「ちはや」の「は」を助詞と解釈して
+    **チワヤ** と読んだ。カタカナなら再解析で壊れない。
+
+        g2p_kana("ちはや") → チワヤ ❌
+        g2p_kana("チハヤ") → チハヤ ✅
+
+    カタカナ・漢字・英数字などはそのまま残す（漢字は残留チェックが拾う）。
+    """
+    return str(reading or "").translate(_HIRA_TO_KATA)
+
+
+# ============================================================================
 # ReadingDictionary — 表記 → 読み のフラット辞書
 # ============================================================================
 
@@ -112,10 +139,13 @@ class ReadingDictionary:
     # --- 適用 ---------------------------------------------------------------
 
     def apply(self, text: str) -> str:
-        """辞書の全エントリを最長一致で置換する。
+        """辞書の全エントリを最長一致で置換する（読みは登録どおり）。
 
         置換結果の文字列をさらに置換することはない
         （「貼付」→「はりつけ」の「はりつけ」は再処理されない）。
+        表示・確認用や、G2P を挟まない経路はこちらを使う。
+        **G2P に渡す前に辞書を適用する場合は apply_kana() を使うこと**
+        （ひらがなの読みは OpenJTalk に再解析されて壊れる。apply_kana 参照）。
         """
         with self._lock:
             entries = dict(self._entries)
@@ -125,6 +155,26 @@ class ReadingDictionary:
             re.escape(k) for k in sorted(entries, key=len, reverse=True))
         return re.sub(pattern, lambda m: entries[m.group()], text)
 
+    def apply_kana(self, text: str) -> str:
+        """辞書を適用し、読みを**カタカナ**で注入する（G2P 前処理用）。
+
+        実機事故（2026-09-16）: 読みをひらがなで注入すると、OpenJTalk が
+        注入後の文字列を再解析し、「ちはや」の「は」を助詞と解釈して
+        **チワヤ** と読んだ。カタカナは表音的に読まれるため再解析で壊れない。
+
+            g2p_kana("ちはや") → チワヤ ❌
+            g2p_kana("チハヤ") → チハヤ ✅
+
+        カタカナ化できない文字（漢字・英字など）はそのまま残し、
+        呼び出し側の漢字残留チェックが検出できるようにする。
+        """
+        with self._lock:
+            entries = dict(self._entries)
+        if not entries or not text:
+            return text
+        pattern = "|".join(
+            re.escape(k) for k in sorted(entries, key=len, reverse=True))
+        return re.sub(pattern, lambda m: to_katakana(entries[m.group()]), text)
 
     # --- 永続化: JSON（Easy-Irodori-TTS 互換） ------------------------------
 
@@ -231,9 +281,11 @@ class ReadingScript(BaseModel):
         """全セグメントの text_reading に辞書を適用して正規化する。
 
         辞書は Script Writer の LLM 出力よりも強い（ADR-0006 §3）。
+        読みはカタカナで注入する（TTS 側の再解析で読みが壊れないように。
+        reading.ReadingDictionary.apply_kana 参照）。
         """
         for seg in self.segments:
-            seg.text_reading = dictionary.apply(seg.text_reading)
+            seg.text_reading = dictionary.apply_kana(seg.text_reading)
 
 
 def validate_reading_script(doc: dict) -> list[str]:

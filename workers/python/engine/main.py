@@ -19,7 +19,8 @@ from pathlib import Path
 
 from acting_ir import ActingIR, performance_to_ir
 from analyzer import OllamaStoryAnalyzer, merge_state, normalize_id
-from audio import concat_audio, export_m4b, probe_duration
+from audio import (concat_audio, export_m4b, probe_duration,
+                   prune_orphan_audio)
 from director import CastingDirector, NARRATOR, RuleBasedDirector, CharacterAwareDirector
 from jobs import CANCELLED, COMPLETED, FAILED, JobCancelled, JobManager, RUNNING
 from memory import MemoryEngine
@@ -616,6 +617,12 @@ def export_audio(memory: MemoryEngine) -> list[tuple[str, str]]:
     parts = memory.audio_paths()
     if not parts:
         return artifacts
+
+    # 再解析で置換された旧セグメントのクリップを掃除する（残骸を残さない）
+    orphans = prune_orphan_audio(out_dir, {sid for sid, _ in parts})
+    if orphans:
+        memory.append_event("AUDIO_PRUNED", removed=len(orphans))
+        print(f"   孤児クリップ {len(orphans)} 件を削除")
 
     wav = out_dir / "audiobook.wav"
     concat_audio([Path(p) for _, p in parts], wav)

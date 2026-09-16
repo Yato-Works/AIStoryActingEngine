@@ -142,6 +142,32 @@ def build_chapter_meta(parts: list, durations: list[float],
     return "\n".join(lines) + "\n"
 
 
+def prune_orphan_audio(out_dir: str | Path, valid_ids: set[str]) -> list[str]:
+    """DB に存在しないセグメントの音声ファイルを削除する。
+
+    再解析でセグメントが置換されると、旧 ID のクリップが audio/ に残る。
+    残骸は再生・確認のときに「どの声が正なのか」を分からなくするため、
+    エクスポート時に掃除する（戻り値は削除したファイル名）。
+
+    Args:
+        out_dir: 本の出力ディレクトリ（audio/ の親）
+        valid_ids: DB に現存するセグメント ID（拡張子なしのファイル名と一致）
+    """
+    audio_dir = Path(out_dir) / "audio"
+    if not audio_dir.is_dir():
+        return []
+    removed: list[str] = []
+    for path in sorted(audio_dir.iterdir()):
+        if not path.is_file() or path.stem in valid_ids:
+            continue
+        try:
+            path.unlink()
+            removed.append(path.name)
+        except OSError:
+            pass
+    return removed
+
+
 def export_m4b(parts: list[tuple[str, int, Path]], out_path: Path,
                chapter_titles: dict[int, str] | None = None,
                title: str = "", gap_ms: int = 250) -> Path:

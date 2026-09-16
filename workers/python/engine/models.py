@@ -52,6 +52,13 @@ class VoiceProfile(BaseModel):
     source: str = "builtin"        # builtin / user / cloned
     tags: list[str] = Field(default_factory=list)  # ["杉田智和風", "渋い", "低音", "中年"]
     description: str = ""
+    # --- TTS Abstraction §8: Voice Consistency ---
+    # キャラクターごとに Backend 別の設定を保持する。
+    # 例: {"sbv2": {"model_name": "jvnv-M1-jp", "style": "Neutral"},
+    #       "indextts": {"reference_audio": "kevin_sample.wav"}}
+    # 通常の作品再生では 1 キャラクター 1 Backend を固定し、
+    # 意図しない声質変化を防ぐ。
+    backend_profiles: dict[str, dict] = Field(default_factory=dict)
 
 
 class Series(BaseModel):

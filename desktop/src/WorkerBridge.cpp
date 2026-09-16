@@ -1,4 +1,5 @@
 #include "WorkerBridge.h"
+#include "LocalApiServer.h"
 
 #if defined(Q_OS_WIN)
 #include <windows.h>
@@ -9,6 +10,11 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QStandardPaths>
+#include <QTcpSocket>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QSettings>
+#include <QCoreApplication>
 #include <utility>
 
 namespace {
@@ -53,6 +59,14 @@ WorkerBridge::WorkerBridge(const QString &pythonExe,
                             .arg(int(err))
                             .arg(m_proc.errorString()));
     });
+
+    // Atlas Integration: Setup local API server
+    setupLocalApiServer();
+    
+    // Atlas Integration: Start periodic discovery
+    m_atlasDiscoveryTimer = new QTimer(this);
+    m_atlasDiscoveryTimer->setInterval(30000); // 30秒ごと
+    connect(m_atlasDiscoveryTimer, &QTimer::timeout, this, &WorkerBridge::discoverAtlas);
 }
 
 int WorkerBridge::nextId()
@@ -319,7 +333,15 @@ void WorkerBridge::handleResponse(const QJsonObject &resp)
     } else if (method == QStringLiteral("list_books")) {
         emit booksLoaded(toVariantList(result.toObject().value("books")));
     } else if (method == QStringLiteral("get_book")) {
-        emit bookLoaded(result.toVariant());
+        QVariant bookData = result.toVariant();
+        emit bookLoaded(bookData);
+        
+        // Atlas接続中ならWork Matchingを試みる
+        if (m_atlasConnected && !m_atlasApiUrl.isEmpty()) {
+            QJsonObject book = result.toObject();
+            QString bookId = book.value("id").toString();
+            matchWorkWithAtlas(bookId);
+        }
     } else if (method == QStringLiteral("get_events")) {
         emit eventsLoaded(toVariantList(result.toObject().value("events")));
     } else if (method == QStringLiteral("search")) {
@@ -368,6 +390,12 @@ void WorkerBridge::handleResponse(const QJsonObject &resp)
     } else if (method == QStringLiteral("import_document")) {
         const QJsonObject o = result.toObject();
         emit documentImported(o.value("novel_path").toString(), o.value("title").toString());
+    } else if (method == QStringLiteral("navigate_to_passage")) {
+        const QJsonObject o = result.toObject();
+        QString deepLink = o.value("deepLink").toString();
+        if (!deepLink.isEmpty()) {
+            QDesktopServices::openUrl(QUrl(deepLink));
+        }
     }
 }
 
@@ -399,4 +427,421 @@ void WorkerBridge::stopPolling(const QString &jobId)
         timer->stop();
         timer->deleteLater();
     }
+}
+
+// ============================================================================
+// Atlas Integration Methods
+// ============================================================================
+
+void WorkerBridge::setupLocalApiServer()
+{
+    m_localApiServer = new LocalApiServer(this);
+    
+    // Atlasからのリクエストハンドラを登録
+    connect(m_localApiServer, &LocalApiServer::engineDiscovered, this, [this](const QString& apiUrl) {
+        onAtlasDiscovered(apiUrl, "StoryAtlas", "0.1.0");
+    });
+    
+    connect(m_localApiServer, &LocalApiServer::workMatchRequested, this, [this](const QJsonObject& req) {
+        handleAtlasWorkMatch(req);
+    });
+    
+    connect(m_localApiServer, &LocalApiServer::contextQueryRequested, this, [this](const QJsonObject& req) {
+        handleAtlasContextQuery(req);
+    });
+    
+    connect(m_localApiServer, &LocalApiServer::navigationRequested, this, [this](const QJsonObject& req) {
+        handleAtlasNavigate(req);
+    });
+    
+    if (m_localApiServer->start(18421)) {
+        emit logMessage("[atlas] Local API server started on port 18421");
+    } else {
+        emit logMessage("[atlas] Failed to start local API server");
+    }
+}
+
+void WorkerBridge::discoverAtlas()
+{
+    if (!m_localApiServer) return;
+    
+    // Atlasの一般的なポートをスキャン
+    const QList<quint16> atlasPorts = {18422, 18423, 18424, 18425};
+    
+    for (quint16 port : atlasPorts) {
+        QTcpSocket* socket = new QTcpSocket(this);
+        connect(socket, &QTcpSocket::connected, this, [this, socket, port]() {
+            // Discovery リクエスト送信
+            QJsonObject request;
+            request["protocolVersion"] = "story/1";
+            QJsonArray caps;
+            caps << "library" << "reader" << "audio" << "tts" << "capture" << "ocr" << "playback";
+            request["capabilities"] = caps;
+            
+            QByteArray json = QJsonDocument(request).toJson(QJsonDocument::Compact);
+            QString httpRequest = QString(
+                "POST /api/v1/discover HTTP/1.1\r\n"
+                "Host: localhost:%1\r\n"
+                "Content-Type: application/json\r\n"
+                "Content-Length: %2\r\n"
+                "\r\n"
+                "%3"
+            ).arg(port).arg(json.size()).arg(QString::fromUtf8(json));
+            
+            socket->write(httpRequest.toUtf8());
+        });
+        
+        connect(socket, &QTcpSocket::readyRead, this, [this, socket, port]() {
+            QByteArray response = socket->readAll();
+            int bodyStart = response.indexOf("\r\n\r\n");
+            if (bodyStart != -1) {
+                QByteArray body = response.mid(bodyStart + 4);
+                QJsonDocument doc = QJsonDocument::fromJson(body);
+                if (doc.isObject()) {
+                    handleAtlasDiscover(doc.object());
+                }
+            }
+            socket->deleteLater();
+        });
+        
+        connect(socket, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred),
+                this, [socket, port](QAbstractSocket::SocketError) {
+            socket->deleteLater();
+        });
+        
+        socket->connectToHost(QHostAddress::LocalHost, port);
+        if (!socket->waitForConnected(1000)) {
+            socket->deleteLater();
+        }
+    }
+}
+
+void WorkerBridge::handleAtlasDiscover(const QJsonObject& response)
+{
+    QString apiUrl = response.value("apiBaseUrl").toString();
+    QString appName = response.value("appName").toString();
+    QString appVersion = response.value("appVersion").toString();
+    
+    if (!apiUrl.isEmpty() && apiUrl != m_atlasApiUrl) {
+        m_atlasApiUrl = apiUrl;
+        m_atlasConnected = true;
+        emit atlasDiscovered(apiUrl, appName, appVersion);
+        emit atlasConnectionStatusChanged(true);
+        emit logMessage(QString("[atlas] Discovered %1 v%2 at %3").arg(appName, appVersion, apiUrl));
+        
+        // 既存の本をAtlasとマッチング
+        listBooks(); // この後 booksLoaded でマッチングを試みる
+    }
+}
+
+void WorkerBridge::matchWorkWithAtlas(const QString& bookId)
+{
+    if (m_atlasApiUrl.isEmpty()) {
+        emit logMessage("[atlas] No Atlas connection for work matching");
+        return;
+    }
+    
+    // Book details を取得してからマッチングリクエスト送信
+    // getBook は非同期なので、ここではまず book 情報を構築して直接送信
+    // 簡易実装: 既知の book 情報からリクエスト構築
+    QJsonObject engineWork;
+    engineWork["id"] = bookId;
+    engineWork["metadata"] = QJsonObject{
+        {"title", ""}, // TODO: 実際のタイトルを取得
+        {"author", ""},
+        {"isbn", ""},
+        {"series", ""},
+        {"volume", QJsonValue::Null}
+    };
+    engineWork["documents"] = QJsonArray(); // TODO: 実際のドキュメント情報
+    
+    QJsonObject request;
+    request["engineWork"] = engineWork;
+    
+    // Atlas API に POST
+    QTcpSocket* socket = new QTcpSocket(this);
+    QUrl url(m_atlasApiUrl);
+    QString host = url.host();
+    quint16 port = url.port(18422);
+    
+    connect(socket, &QTcpSocket::connected, this, [this, socket, request, host]() {
+        QByteArray json = QJsonDocument(request).toJson(QJsonDocument::Compact);
+        QString httpRequest = QString(
+            "POST /api/v1/work/match HTTP/1.1\r\n"
+            "Host: %1\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: %2\r\n"
+            "\r\n"
+            "%3"
+        ).arg(host).arg(json.size()).arg(QString::fromUtf8(json));
+        socket->write(httpRequest.toUtf8());
+    });
+    
+    connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
+        QByteArray response = socket->readAll();
+        int bodyStart = response.indexOf("\r\n\r\n");
+        if (bodyStart != -1) {
+            QByteArray body = response.mid(bodyStart + 4);
+            QJsonDocument doc = QJsonDocument::fromJson(body);
+            if (doc.isObject()) {
+                onAtlasWorkMatchResponse(doc.object());
+            }
+        }
+        socket->deleteLater();
+    });
+    
+    connect(socket, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred),
+            this, [socket](QAbstractSocket::SocketError) {
+        socket->deleteLater();
+    });
+    
+    socket->connectToHost(url.host(), url.port(18422));
+}
+
+void WorkerBridge::sendContextToAtlas(const QString& workId, const QString& chapterId, const QString& sentenceId)
+{
+    if (m_atlasApiUrl.isEmpty()) return;
+    
+    QJsonObject context = getCurrentContext(workId, chapterId, sentenceId);
+    if (context.isEmpty()) return;
+    
+    QTcpSocket* socket = new QTcpSocket(this);
+    connect(socket, &QTcpSocket::connected, this, [this, socket, context]() {
+        QByteArray json = QJsonDocument(context).toJson(QJsonDocument::Compact);
+        QString httpRequest = QString(
+            "POST /api/v1/context/query HTTP/1.1\r\n"
+            "Host: %1\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: %2\r\n"
+            "\r\n"
+            "%3"
+        ).arg(m_atlasApiUrl).arg(json.size()).arg(QString::fromUtf8(json));
+        socket->write(httpRequest.toUtf8());
+    });
+    
+    connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
+        QByteArray response = socket->readAll();
+        int bodyStart = response.indexOf("\r\n\r\n");
+        if (bodyStart != -1) {
+            QByteArray body = response.mid(bodyStart + 4);
+            QJsonDocument doc = QJsonDocument::fromJson(body);
+            if (doc.isObject()) {
+                onAtlasContextResponse(doc.object());
+            }
+        }
+        socket->deleteLater();
+    });
+    
+    // URLからホストを抽出
+    QUrl url(m_atlasApiUrl);
+    socket->connectToHost(url.host(), url.port(18422));
+}
+
+void WorkerBridge::navigateToPassage(const QString& workId, const QString& chapterId, const QString& sentenceId, const QString& mode)
+{
+    // aiae:// Deep Link を生成して処理
+    QString passageRef = buildPassageRef(workId, chapterId, sentenceId);
+    QString deepLink = QString("aiae://open?workId=%1&chapterId=%2&sentenceId=%3&mode=%4")
+        .arg(workId, chapterId, sentenceId, mode);
+    
+    // OSで開く
+    QDesktopServices::openUrl(QUrl(deepLink));
+}
+
+QString WorkerBridge::buildPassageRef(const QString& workId, const QString& chapterId, const QString& sentenceId)
+{
+    QString ref = QString("work:%1").arg(workId);
+    if (!chapterId.isEmpty()) ref += QString("/ch:%1").arg(chapterId);
+    if (!sentenceId.isEmpty()) ref += QString("/sen:%1").arg(sentenceId);
+    return ref;
+}
+
+QJsonObject WorkerBridge::getCurrentContext(const QString& workId, const QString& chapterId, const QString& sentenceId)
+{
+    QJsonObject context;
+    context["workId"] = workId;
+    
+    QJsonObject passageRef;
+    passageRef["workId"] = workId;
+    if (!chapterId.isEmpty()) passageRef["chapterId"] = chapterId;
+    if (!sentenceId.isEmpty()) passageRef["sentenceId"] = sentenceId;
+    context["passageRef"] = passageRef;
+    
+    QJsonArray requestTypes;
+    requestTypes << "characters" << "foreshadowing" << "plot" << "timeline" << "world";
+    context["requestTypes"] = requestTypes;
+    
+    QJsonObject options;
+    options["characterLimit"] = 10;
+    options["foreshadowingLimit"] = 10;
+    options["plotLimit"] = 10;
+    options["timelineLimit"] = 10;
+    options["includeResolvedForeshadowing"] = false;
+    context["options"] = options;
+    
+    return context;
+}
+
+void WorkerBridge::onAtlasDiscovered(const QString& apiUrl, const QString& appName, const QString& appVersion)
+{
+    m_atlasApiUrl = apiUrl;
+    m_atlasConnected = true;
+    emit atlasConnectionStatusChanged(true);
+    m_atlasDiscoveryTimer->stop(); // 見つかったら定期検索停止
+}
+
+void WorkerBridge::handleAtlasWorkMatch(const QJsonObject& req)
+{
+    // AtlasからのWork Matchingリクエストを処理
+    // Engine側の本情報を返す
+    QJsonObject engineWork = req.value("engineWork").toObject();
+    QString bookId = engineWork.value("id").toString();
+    
+    // Book details を取得してレスポンス送信
+    QJsonObject bookData = getBookForWorkMatch(bookId);
+    if (!bookData.isEmpty()) {
+        sendAtlasResponse("/api/v1/work/match", bookData);
+    }
+}
+
+QJsonObject WorkerBridge::getBookForWorkMatch(const QString& bookId)
+{
+    // 同期的に本情報を取得（Python Worker経由）
+    // 簡易実装: 同期呼び出しで book データ取得
+    QJsonObject request;
+    request["jsonrpc"] = "2.0";
+    request["id"] = nextId();
+    request["method"] = "get_book";
+    
+    QJsonObject params;
+    params["book_id"] = bookId;
+    request["params"] = params;
+    
+    // 同期呼び出し用の一時的な処理
+    // 実際には非同期でやるべきだが、ここでは同期的に待つ
+    m_pendingSyncRequest = request.value("id").toInt();
+    m_syncResponse = QJsonObject();
+    
+    send(request);
+    
+    // 最大5秒待機
+    QEventLoop loop;
+    QTimer::singleShot(5000, &loop, &QEventLoop::quit);
+    connect(this, &WorkerBridge::bookLoaded, &loop, [this, &loop](const QVariant& book) {
+        m_syncResponse = book.toJsonObject();
+        loop.quit();
+    });
+    loop.exec();
+    
+    return m_syncResponse;
+}
+
+void WorkerBridge::handleAtlasContextQuery(const QJsonObject& req)
+{
+    // AtlasからのContext Queryを処理
+    // 現在の読書位置のコンテキストを返す
+    QString workId = req.value("workId").toString();
+    QJsonObject passageRef = req.value("passageRef").toObject();
+    QString chapterId = passageRef.value("chapterId").toString();
+    QString sentenceId = passageRef.value("sentenceId").toString();
+    
+    QJsonObject context = getCurrentContext(workId, chapterId, sentenceId);
+    
+    // Python Workerにキャラクター情報等を問い合わせてからレスポンス送信
+    // ここでは同期的にPython Workerに問い合わせ
+    QJsonObject fullContext = getFullContextFromWorker(workId, chapterId, sentenceId);
+    sendAtlasResponse("/api/v1/context/query", fullContext);
+}
+
+QJsonObject WorkerBridge::getFullContextFromWorker(const QString& workId, const QString& chapterId, const QString& sentenceId)
+{
+    m_pendingSyncRequest = nextId();
+    m_syncResponse = QJsonObject();
+    
+    QJsonObject request;
+    request["jsonrpc"] = "2.0";
+    request["id"] = m_pendingSyncRequest;
+    request["method"] = "get_current_context";
+    
+    QJsonObject params;
+    params["book_id"] = workId;
+    params["chapter_id"] = chapterId;
+    params["sentence_id"] = sentenceId;
+    request["params"] = params;
+    
+    send(request);
+    
+    // 最大5秒待機
+    QEventLoop loop;
+    QTimer::singleShot(5000, &loop, &QEventLoop::quit);
+    connect(this, &WorkerBridge::bookLoaded, &loop, [this, &loop](const QVariant& book) {
+        m_syncResponse = book.toJsonObject();
+        loop.quit();
+    });
+    loop.exec();
+    
+    return m_syncResponse;
+}
+
+void WorkerBridge::handleAtlasNavigate(const QJsonObject& req)
+{
+    // Atlasからのナビゲーションリクエスト
+    QJsonObject passageRef = req.value("passageRef").toObject();
+    QString mode = req.value("mode").toString();
+    
+    QString workId = passageRef.value("workId").toString();
+    QString chapterId = passageRef.value("chapterId").toString();
+    QString sentenceId = passageRef.value("sentenceId").toString();
+    
+    navigateToPassage(workId, chapterId, sentenceId, mode);
+}
+
+void WorkerBridge::onAtlasWorkMatchResponse(const QJsonObject& response)
+{
+    bool matched = response.value("matched").toBool();
+    QString workId = response.value("workId").toString();
+    double confidence = response.value("confidence").toDouble();
+    QString bookId = response.value("bookId").toString(); // 別途管理が必要
+    
+    if (matched && !workId.isEmpty()) {
+        emit atlasWorkMatched(bookId, workId, confidence);
+    }
+}
+
+void WorkerBridge::onAtlasContextResponse(const QJsonObject& response)
+{
+    QString workId = response.value("workId").toString();
+    emit atlasContextReceived(workId, response);
+}
+
+// Atlas同期レスポンス送信
+void WorkerBridge::sendAtlasResponse(const QString& endpoint, const QJsonObject& data)
+{
+    if (m_atlasApiUrl.isEmpty()) return;
+    
+    QTcpSocket* socket = new QTcpSocket(this);
+    QUrl url(m_atlasApiUrl);
+    QString host = url.host();
+    quint16 port = url.port(18422);
+    
+    connect(socket, &QTcpSocket::connected, this, [this, socket, endpoint, data, host]() {
+        QJsonObject request;
+        request["jsonrpc"] = "2.0";
+        request["method"] = endpoint;
+        request["params"] = data;
+        
+        QByteArray json = QJsonDocument(request).toJson(QJsonDocument::Compact);
+        QString httpRequest = QString(
+            "POST %1 HTTP/1.1\r\n"
+            "Host: %2\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: %3\r\n"
+            "\r\n"
+            "%4"
+        ).arg(endpoint).arg(host).arg(json.size()).arg(QString::fromUtf8(json));
+        
+        socket->write(httpRequest.toUtf8());
+    });
+    
+    socket->connectToHost(QHostAddress::LocalHost, 18422);
 }

@@ -8,6 +8,11 @@
 #include <QUrl>
 #include <QVariantList>
 #include <QTimer>
+#include <QHostAddress>
+#include <QJsonObject>
+#include <QEventLoop>
+
+class LocalApiServer;
 
 /// WorkerBridge — Python Worker (worker.py) を QProcess で spawn し、
 /// stdio 上の改行区切り JSON-RPC 2.0（ADR-0004）で通信する C++ ブリッジ。
@@ -61,6 +66,12 @@ public:
     Q_INVOKABLE void assignBookToSeries(const QString &bookId, const QString &seriesId);
     Q_INVOKABLE void importDocument(const QStringList &sources, const QString &title = QString());
 
+    // ---- Atlas Integration ----
+    Q_INVOKABLE void discoverAtlas();
+    Q_INVOKABLE void matchWorkWithAtlas(const QString& bookId);
+    Q_INVOKABLE void sendContextToAtlas(const QString& workId, const QString& chapterId, const QString& sentenceId);
+    Q_INVOKABLE void navigateToPassage(const QString& workId, const QString& chapterId, const QString& sentenceId, const QString& mode);
+
     Q_INVOKABLE void restart();            // クラッシュ後の worker 再起動
     Q_INVOKABLE void shutdown();
 
@@ -90,6 +101,12 @@ signals:
     void errorOccurred(int code, QString message);
     void logMessage(QString line);          // worker の stderr を QML ログへ
 
+    // Atlas Integration Signals
+    void atlasDiscovered(QString apiUrl, QString appName, QString appVersion);
+    void atlasWorkMatched(QString bookId, QString workId, double confidence);
+    void atlasContextReceived(QString workId, QVariant context);
+    void atlasConnectionStatusChanged(bool connected);
+
 private slots:
     void onReadyRead();
     void onReadyReadError();
@@ -103,13 +120,39 @@ private:
     void stopPolling(const QString &jobId);
     bool isTerminalStatus(const QString &status) const;
 
+    // Atlas Integration
+    void setupLocalApiServer();
+    void handleAtlasDiscover(const QJsonObject& req);
+    void handleAtlasWorkMatch(const QJsonObject& req);
+    void handleAtlasContextQuery(const QJsonObject& req);
+    void handleAtlasNavigate(const QJsonObject& req);
+    void onAtlasDiscovered(const QString& apiUrl, const QString& appName, const QString& appVersion);
+    void onAtlasWorkMatchResponse(const QJsonObject& response);
+    void onAtlasContextResponse(const QJsonObject& response);
+    QString buildPassageRef(const QString& workId, const QString& chapterId, const QString& sentenceId);
+    QJsonObject getCurrentContext(const QString& workId, const QString& chapterId, const QString& sentenceId);
+
+    // Atlas同期リクエスト用
+    QJsonObject getBookForWorkMatch(const QString& bookId);
+    QJsonObject getFullContextFromWorker(const QString& workId, const QString& chapterId, const QString& sentenceId);
+    void sendAtlasResponse(const QString& endpoint, const QJsonObject& data);
+
+    int m_pendingSyncRequest = -1;
+    QJsonObject m_syncResponse;
+
     QProcess m_proc;
     QByteArray m_inBuffer;
     int m_nextId = 1;
-    bool m_shuttingDown = false;            // shutdown() 由来の終了か
-    QHash<int, QString> m_pending;          // id -> method
-    QHash<QString, QTimer *> m_polls;       // jobId -> polling timer
+    bool m_shuttingDown = false;
+    QHash<int, QString> m_pending;
+    QHash<QString, QTimer *> m_polls;
     QString m_pythonExe;
     QString m_workerScript;
     QDir m_repoRoot;
+
+    // Atlas Integration
+    LocalApiServer* m_localApiServer = nullptr;
+    QString m_atlasApiUrl;
+    bool m_atlasConnected = false;
+    QTimer* m_atlasDiscoveryTimer = nullptr;
 };

@@ -153,3 +153,24 @@ def get_provider(name: str, host: str | None = None) -> ITTSProvider:
 
         return StyleBertVITS2Provider(host or os.environ.get("SBV2_HOST", "http://127.0.0.1:5000"))
     return EdgeTTSProvider()
+
+
+# ============================================================================
+# TTS Abstraction Bridge (後方互換)
+#
+# 新しい TTSBackend アーキテクチャへの橋渡し。
+# 既存の get_provider() / ITTSProvider は完全に動作し続ける。
+# 新コードは get_backend() 経由で ActingIR ベースの合成を利用できる。
+# ============================================================================
+
+def get_backend(name: str, **kwargs):
+    """新しい TTSBackend アーキテクチャ経由で Backend を取得する。
+
+    Usage:
+        backend = get_backend("sbv2")
+        report = backend.synthesize(acting_ir, out_path)
+    """
+    import backends  # noqa: F401  (自動登録を発火)
+    from tts_registry import get_backend as _get
+    return _get(name, **kwargs)
+

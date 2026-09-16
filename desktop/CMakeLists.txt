@@ -13,13 +13,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Multimedia)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Multimedia Network)
 qt_policy(SET QTP0004 NEW)
 
 qt6_add_executable(aiae_desktop
     src/main.cpp
     src/WorkerBridge.h
     src/WorkerBridge.cpp
+    src/LocalApiServer.h
+    src/LocalApiServer.cpp
 )
 
 qt6_add_qml_module(aiae_desktop

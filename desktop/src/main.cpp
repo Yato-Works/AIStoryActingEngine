@@ -8,6 +8,9 @@
 #include <QQmlContext>
 #include <QTimer>
 #include <QUrl>
+#include <QUrlQuery>
+#include <QSettings>
+#include <QCoreApplication>
 
 #include "WorkerBridge.h"
 
@@ -46,12 +49,34 @@ QString defaultPythonExe(const QDir &repo)
 
 } // namespace
 
+// Deep Link スキーム登録 (Windows)
+void registerAiaeProtocol()
+{
+#if defined(Q_OS_WIN)
+    QString exePath = QCoreApplication::applicationFilePath();
+    QSettings settings("HKEY_CURRENT_USER\\Software\\Classes\\aiae", QSettings::NativeFormat);
+    settings.setValue("", "URL:AIStoryActingEngine Protocol");
+    settings.setValue("URL Protocol", "");
+    
+    QSettings iconSettings("HKEY_CURRENT_USER\\Software\\Classes\\aiae\\DefaultIcon", QSettings::NativeFormat);
+    iconSettings.setValue("", exePath + ",1");
+    
+    QSettings cmdSettings("HKEY_CURRENT_USER\\Software\\Classes\\aiae\\shell\\open\\command", QSettings::NativeFormat);
+    cmdSettings.setValue("", QString("\"%1\" \"%2\"").arg(exePath, "%1"));
+    
+    qInfo() << "Registered aiae:// protocol handler";
+#endif
+}
+
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("AIStoryActingEngine Desktop"));
     QCoreApplication::setOrganizationName(QStringLiteral("aiae"));
     QCoreApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+
+    // Deep Link プロトコル登録
+    registerAiaeProtocol();
 
     QCommandLineParser parser;
     parser.setApplicationDescription(
@@ -81,6 +106,32 @@ int main(int argc, char *argv[])
         : parser.value(workerOpt);
 
     WorkerBridge bridge(pythonExe, workerScript, repoRoot);
+
+    // Deep Link 引数処理 (aiae://open?workId=...&chapterId=...&sentenceId=...&mode=...)
+    QStringList args = QCoreApplication::arguments();
+    for (const QString& arg : args) {
+        if (arg.startsWith("aiae://")) {
+            QUrl url(arg);
+            if (url.path() == "/open") {
+                QUrlQuery query(url);
+                QString bookId = query.queryItemValue("workId");
+                if (bookId.isEmpty()) bookId = query.queryItemValue("bookId");
+                QString chapterId = query.queryItemValue("chapterId");
+                QString sentenceId = query.queryItemValue("sentenceId");
+                QString mode = query.queryItemValue("mode");
+                if (mode.isEmpty()) mode = "read";
+                
+                // ブリッジにナビゲーション要求を送る（少し遅延してworker起動後に処理）
+                QTimer::singleShot(1000, &bridge, [&bridge, bookId, chapterId, sentenceId, mode]() {
+                    QMetaObject::invokeMethod(&bridge, "navigateToPassage",
+                        Q_ARG(QString, bookId),
+                        Q_ARG(QString, chapterId),
+                        Q_ARG(QString, sentenceId),
+                        Q_ARG(QString, mode));
+                });
+            }
+        }
+    }
 
     // ---- self-test モード: GUI なしで worker 接続 (ping) を確認して終了 ----
     if (parser.isSet(selfTestOpt)) {

@@ -839,3 +839,51 @@ class MemoryEngine:
         )
 
 
+# ============================================================================
+# Atlas Integration Helper Methods
+# ============================================================================
+
+    def get_characters_at_position(self, chapter: int, sentence_id: str | None) -> list[dict]:
+        """指定位置付近に登場するキャラクターを取得。"""
+        # 簡易実装: 該当章の全キャラクターを返す
+        rows = self.conn.execute(
+            """SELECT id, name, role FROM characters WHERE book_id=? AND first_chunk <= ?
+               ORDER BY first_chunk""",
+            (self.book_id, chapter * 1000)  # 章ごとに1000チャンク想定
+        ).fetchall()
+        return [{"id": r["id"], "canonicalName": r["name"], "role": r["role"] or "minor"} for r in rows]
+
+    def get_all_characters(self) -> list:
+        """全キャラクター取得。"""
+        rows = self.conn.execute(
+            "SELECT id, name, role FROM characters WHERE book_id=? ORDER BY first_chunk, id",
+            (self.book_id,)
+        ).fetchall()
+        return [type('Character', (), {"id": r["id"], "name": r["name"], "role": r["role"], "relationships": {}})() for r in rows]
+
+    def get_recent_foreshadowing_candidates(self, chapter: int, limit: int = 10) -> list[dict]:
+        """最近の伏線候補を取得（メモリから推測）。"""
+        # 実装簡易化: 空配列返す（将来的にmemoriesテーブルから推測）
+        return []
+
+    def get_plot_progress(self, chapter: int) -> list[dict]:
+        """Plot進捗を取得。"""
+        return []
+
+    def get_timeline_near(self, chapter: int, limit: int = 10) -> list[dict]:
+        """指定章付近のタイムラインイベント取得。"""
+        return []
+
+    def get_foreshadowing_candidates(self, status: str | None = None, limit: int = 20) -> list[dict]:
+        """伏線候補一覧取得。"""
+        return []
+
+    def get_plot_arcs(self) -> list[dict]:
+        """Plotアーク一覧取得。"""
+        return []
+
+    def get_timeline_events(self) -> list[dict]:
+        """Timelineイベント一覧取得。"""
+        return []
+
+

@@ -153,7 +153,15 @@ class EngineWorker:
                             "cancel_job", "pause_job", "resume_job", "list_jobs",
                             "list_voice_profiles", "save_voice_profile", "delete_voice_profile",
                             "get_castings", "assign_casting", "list_series", "upsert_series",
-                            "assign_book_to_series", "preview_voice", "import_document"],
+                            "assign_book_to_series", "preview_voice", "import_document",
+                            # Atlas Integration
+                            "discover_atlas",
+                            "get_current_context",
+                            "get_characters_for_atlas",
+                            "get_foreshadowing_for_atlas",
+                            "get_plot_for_atlas",
+                            "get_timeline_for_atlas",
+                            "navigate_to_passage"],
                 "db": str(self.db_path)}
 
     def rpc_ping(self) -> dict:
@@ -606,8 +614,133 @@ class EngineWorker:
         out_file = import_book_document(source_list, title=title, out_dir=out_dir)
         return {"ok": True, "novel_path": str(out_file.resolve()), "title": out_file.stem}
 
+    # ------------------------------------------------------------ Atlas Integration
 
-    # ------------------------------------------------------------ recovery
+    def rpc_discover_atlas(self) -> dict:
+        """AtlasからのDiscoveryリクエストに応答する。"""
+        return {
+            "protocolVersion": "story/1",
+            "appName": "AIStoryActingEngine",
+            "appVersion": "0.1.0",
+            "apiBaseUrl": "http://localhost:18421",
+            "deepLinkScheme": "aiae://",
+            "capabilities": [
+                "library", "reader", "audio", "tts", "capture", "ocr", "playback"
+            ]
+        }
+
+    def rpc_get_current_context(self, book_id: str, chapter_id: str | None = None, sentence_id: str | None = None) -> dict:
+        """現在の読書コンテキストを取得（AtlasへのContext Query用）。"""
+        mem = MemoryEngine(self.db_path, book_id)
+        try:
+            # 現在の読書位置を取得
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT chapter_id, sentence_id FROM reading_progress WHERE book_id=?", (book_id,)
+                ).fetchone()
+                current_chapter = chapter_id or (row["chapter_id"] if row else 1)
+                current_sentence = sentence_id or (row["sentence_id"] if row else None)
+            finally:
+                conn.close()
+
+            # 現在位置のキャラクター取得
+            characters = mem.get_characters_at_position(current_chapter, current_sentence)
+            
+            # 直近の伏線候補取得
+            foreshadowing = mem.get_recent_foreshadowing_candidates(current_chapter, limit=10)
+            
+            # Plot進捗取得
+            plot_progress = mem.get_plot_progress(current_chapter)
+            
+            # Timeline近辺のイベント取得
+            timeline = mem.get_timeline_near(current_chapter, limit=10)
+
+            return {
+                "workId": book_id,
+                "passageRef": {
+                    "workId": book_id,
+                    "chapterId": current_chapter,
+                    "sentenceId": current_sentence
+                },
+                "characters": characters,
+                "foreshadowing": foreshadowing,
+                "plot": plot_progress,
+                "timeline": timeline,
+                "world": {
+                    "locationCount": 0,
+                    "itemCount": 0,
+                    "organizationCount": 0,
+                    "ruleCount": 0
+                }
+            }
+        finally:
+            mem.close()
+
+    def rpc_get_characters_for_atlas(self, book_id: str) -> dict:
+        """Atlas用のキャラクター一覧取得。"""
+        mem = MemoryEngine(self.db_path, book_id)
+        try:
+            chars = mem.get_all_characters()
+            result = []
+            for ch in chars:
+                result.append({
+                    "id": ch.id,
+                    "canonicalName": ch.name,
+                    "aliases": [],
+                    "role": ch.role or "minor",
+                    "description": "",
+                    "relationshipCount": len(ch.relationships)
+                })
+            return {"characters": result}
+        finally:
+            mem.close()
+
+    def rpc_get_foreshadowing_for_atlas(self, book_id: str, status: str | None = None) -> dict:
+        """Atlas用の伏線一覧取得。"""
+        mem = MemoryEngine(self.db_path, book_id)
+        try:
+            fsh = mem.get_foreshadowing_candidates(status=status, limit=20)
+            return {"foreshadowing": fsh}
+        finally:
+            mem.close()
+
+    def rpc_get_plot_for_atlas(self, book_id: str) -> dict:
+        """Atlas用のPlot一覧取得。"""
+        mem = MemoryEngine(self.db_path, book_id)
+        try:
+            plots = mem.get_plot_arcs()
+            return {"plot": plots}
+        finally:
+            mem.close()
+
+    def rpc_get_timeline_for_atlas(self, book_id: str) -> dict:
+        """Atlas用のTimeline取得。"""
+        mem = MemoryEngine(self.db_path, book_id)
+        try:
+            timeline = mem.get_timeline_events()
+            return {"timeline": timeline}
+        finally:
+            mem.close()
+
+    def rpc_navigate_to_passage(self, book_id: str, chapter_id: str, sentence_id: str | None = None, mode: str = "read") -> dict:
+        """Deep Linkナビゲーション用の位置情報を返す。"""
+        # 読書位置を更新
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO reading_progress (book_id, chapter_id, sentence_id, updated_at)
+                   VALUES (?, ?, ?, datetime('now'))""",
+                (book_id, chapter_id, sentence_id)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        
+        return {
+            "success": True,
+            "deepLink": f"aiae://open?bookId={book_id}&chapterId={chapter_id}&sentenceId={sentence_id or ''}&mode={mode}"
+        }
 
     def _is_alive(self, job_id: str) -> bool:
         with self._lock:

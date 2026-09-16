@@ -408,7 +408,8 @@ def _build_reading_scripts(memory: MemoryEngine, todo: list,
     戻り値: {segment_id: text_reading（全文かな）}
     """
     from reading import (
-        ReadingDictionary, reading_script_doc, save_reading_script,
+        READING_SCRIPT_JSON, ReadingDictionary, load_reading_script,
+        merge_reading_script_doc, reading_script_doc, save_reading_script,
     )
     from reading_judge import ContextReadingJudge, OllamaReadingJudge
     from script_writer import (
@@ -499,8 +500,19 @@ def _build_reading_scripts(memory: MemoryEngine, todo: list,
         doc = reading_script_doc(
             script_chunks, book_id=memory.book_id, writer=writer_name,
             dictionary_path=str(_READINGS_PATH), judge_issues=judge_issues)
-        json_path, txt_path = save_reading_script(OUT_DIR / memory.book_id, doc)
-        print(f"     📄 読み台本を保存: {json_path.name} / {txt_path.name}")
+        out_dir = OUT_DIR / memory.book_id
+        # 部分再実行（--resume）でも本全体の読みを映す記録として保つ
+        previous = None
+        script_json = out_dir / READING_SCRIPT_JSON
+        if script_json.exists():
+            try:
+                previous = load_reading_script(script_json)
+            except (OSError, ValueError):
+                previous = None
+        doc = merge_reading_script_doc(previous, doc)
+        json_path, txt_path = save_reading_script(out_dir, doc)
+        print(f"     📄 読み台本を保存: {txt_path.name}"
+              f"（{len(doc['segments'])} セグメント）")
     return readings
 
 

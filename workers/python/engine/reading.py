@@ -321,11 +321,16 @@ def reading_script_doc(chunks, *, book_id: str = "", writer: str = "",
 def render_reading_script_text(doc: dict) -> str:
     """監査ドキュメントを人間可読テキストにする（原文 + かなを並べる）。"""
     judge = doc.get("judge") or {}
+    writers = doc.get("writers") or [doc.get("writer", "?")]
     lines = [
         f"# 読み台本 {doc.get('book_id', '')}",
-        f"# 台本家: {doc.get('writer', '?')}",
+        f"# 台本家: {','.join(w for w in writers if w) or '?'}",
         f"# 辞書: {doc.get('dictionary', '') or '(なし)'}",
         f"# 生成: {doc.get('created_at', '')}",
+    ]
+    if doc.get("updated_at"):
+        lines.append(f"# 更新: {doc['updated_at']}")
+    lines += [
         f"# セグメント数: {len(doc.get('segments') or [])}",
         f"# 読み審査: {'問題なし' if judge.get('ok') else '要確認'}",
     ]
@@ -363,4 +368,63 @@ def save_reading_script(out_dir: str | Path, doc: dict) -> tuple[Path, Path]:
 def load_reading_script(path: str | Path) -> dict:
     """保存済みの読み台本 JSON を読み込む（BOM 付き UTF-8 も許容）。"""
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+
+
+def merge_reading_script_doc(existing: dict | None, new: dict) -> dict:
+    """既存の読み台本と今回分を統合する（部分再実行で監査ファイルを痩せさせない）。
+
+    再開実行（--resume）では未合成セグメントだけが台本の対象になる。
+    そのまま上書きすると「本全体の読み」を映す監査ファイルが部分データに
+    なってしまうため、今回触れなかったセグメントは既存の記録を残す。
+
+    Args:
+        existing: 既存の reading_script.json（無ければ None / {}）
+        new: 今回の実行で作ったドキュメント
+    Returns:
+        dict: 統合済みドキュメント。並びは (chunk_index, id) 順。
+    """
+    if not existing or not existing.get("segments"):
+        return new
+
+    merged: dict[str, dict] = {}
+    for seg in existing.get("segments") or []:
+        sid = str(seg.get("id") or "")
+        if sid:
+            merged[sid] = seg
+    replaced: set[str] = set()
+    for seg in new.get("segments") or []:
+        sid = str(seg.get("id") or "")
+        if sid:
+            merged[sid] = seg
+            replaced.add(sid)
+
+    def _order(seg: dict) -> tuple[int, str]:
+        try:
+            chunk = int(seg.get("chunk_index") or 0)
+        except (TypeError, ValueError):
+            chunk = 0
+        return (chunk, str(seg.get("id") or ""))
+
+    out = dict(new)
+    out["segments"] = sorted(merged.values(), key=_order)
+
+    # 残したセグメントの審査結果・漢字残留はそのまま維持する
+    new_judge = new.get("judge") or {}
+    kept_issues = [i for i in (existing.get("judge") or {}).get("issues") or []
+                   if str(i.get("segment_id") or "") not in replaced]
+    issues = kept_issues + list(new_judge.get("issues") or [])
+    out["judge"] = {"ok": not issues, "issues": issues}
+
+    residue = {sid: chars
+               for sid, chars in (existing.get("residue") or {}).items()
+               if sid not in replaced}
+    residue.update(new.get("residue") or {})
+    out["residue"] = dict(sorted(residue.items()))
+
+    writers = {str(w) for w in (existing.get("writers") or [])
+               if w} | {str(existing.get("writer") or "")} | {str(new.get("writer") or "")}
+    out["writers"] = sorted(w for w in writers if w)
+    out["created_at"] = existing.get("created_at") or new.get("created_at")
+    out["updated_at"] = new.get("created_at")
+    return out
 

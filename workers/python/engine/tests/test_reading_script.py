@@ -27,6 +27,7 @@ from reading import (
     kanji_chars,
     kanji_residue,
     load_reading_script,
+    merge_reading_script_doc,
     reading_script_doc,
     render_reading_script_text,
     save_reading_script,
@@ -389,5 +390,79 @@ class TestReadingScriptArtifact:
         doc = reading_script_doc([], book_id="empty")
         assert doc["segments"] == [] and doc["residue"] == {}
         assert doc["judge"] == {"ok": True, "issues": []}
+
+
+class TestReadingScriptMerge:
+    """部分再実行（--resume）で監査ファイルを痩せさせない。"""
+
+    def _doc(self, segments, *, writer="openjtalk", issues=None, residue=None):
+        return {
+            "version": "1", "book_id": "sample", "writer": writer,
+            "segments": segments, "created_at": "2026-01-01T00:00:00+00:00",
+            "judge": {"ok": not (issues or []), "issues": issues or []},
+            "residue": residue or {},
+        }
+
+    def _seg(self, sid, chunk, text, reading):
+        return {"id": sid, "chunk_index": chunk, "speaker": "narrator",
+                "text": text, "text_reading": reading}
+
+    def test_untouched_segments_are_kept(self):
+        existing = self._doc([
+            self._seg("seg_000", 0, "一番目", "イチバンメ"),
+            self._seg("seg_001", 0, "二番目", "ニバンメ"),
+            self._seg("seg_002", 1, "三番目", "サンバンメ"),
+        ])
+        new = self._doc([self._seg("seg_002", 1, "三番目", "サンバンメ・改")])
+        merged = merge_reading_script_doc(existing, new)
+        ids = [s["id"] for s in merged["segments"]]
+        assert ids == ["seg_000", "seg_001", "seg_002"]
+        assert merged["segments"][-1]["text_reading"] == "サンバンメ・改"
+        assert merged["created_at"] == "2026-01-01T00:00:00+00:00"
+        assert merged["updated_at"] == new["created_at"]
+
+    def test_replaced_segment_residue_and_issues_are_refreshed(self):
+        existing = self._doc(
+            [self._seg("seg_000", 0, "看板", "カンバン")],
+            issues=[{"kind": "kanji_residue", "segment_id": "seg_000",
+                     "detail": "漢字が残存: 看板"}],
+            residue={"seg_000": ["板", "看"]})
+        # 今回は seg_000 が正しくかな化された
+        new = self._doc([self._seg("seg_000", 0, "看板", "カンバン")])
+        merged = merge_reading_script_doc(existing, new)
+        assert merged["residue"] == {}
+        assert merged["judge"] == {"ok": True, "issues": []}
+
+    def test_kept_segment_issues_survive(self):
+        existing = self._doc(
+            [self._seg("seg_000", 0, "過去", "カコ")],
+            issues=[{"kind": "length_drift", "segment_id": "seg_000",
+                     "detail": "短すぎる"}],
+            residue={"seg_000": ["過"]})
+        new = self._doc([self._seg("seg_005", 2, "新しい", "アタラシイ")])
+        merged = merge_reading_script_doc(existing, new)
+        assert merged["residue"] == {"seg_000": ["過"]}
+        assert merged["judge"]["ok"] is False
+        assert merged["judge"]["issues"][0]["segment_id"] == "seg_000"
+
+    def test_writers_are_accumulated(self):
+        existing = self._doc([self._seg("seg_000", 0, "あ", "ア")],
+                             writer="llm")
+        new = self._doc([self._seg("seg_001", 0, "い", "イ")],
+                        writer="openjtalk")
+        merged = merge_reading_script_doc(existing, new)
+        assert merged["writers"] == ["llm", "openjtalk"]
+        assert "# 台本家: llm,openjtalk" in render_reading_script_text(merged)
+
+    def test_no_existing_doc_returns_new(self):
+        new = self._doc([self._seg("seg_000", 0, "あ", "ア")])
+        assert merge_reading_script_doc(None, new) is new
+        assert merge_reading_script_doc({}, new) is new
+
+    def test_sorted_by_chunk_then_id(self):
+        existing = self._doc([self._seg("seg_009", 1, "あ", "ア")])
+        new = self._doc([self._seg("seg_001", 0, "い", "イ")])
+        merged = merge_reading_script_doc(existing, new)
+        assert [s["id"] for s in merged["segments"]] == ["seg_001", "seg_009"]
 
 

@@ -268,7 +268,13 @@ def analyze_book(novel_path: Path, memory: MemoryEngine, resume: bool = False,
 
         _cast_characters(memory, state, casting, analyzer, gi)
 
-        start_no = memory.count_segments()
+        # ---- 再解析は「置換」: 残すと別 ID の重複行が増え、音声が繰り返される ----
+        removed = memory.delete_chunk_segments(gi)
+        if removed:
+            memory.append_event("ANALYZE_REPLACED", chunk_index=gi,
+                                removed=removed)
+            print(f"     ♻ 既存セグメント {removed} 件を置換（再解析）")
+        start_no = memory.segment_start_no(gi)
         segments = build_segments(analysis, state, chapter, gi, start_no)
         _direct_segments(memory, state, director, rule_director, segments, gi)
 
@@ -401,9 +407,13 @@ def _build_reading_scripts(memory: MemoryEngine, todo: list,
     に永続化され、一度決めた読みは次回以降決定論的に適用される。
     戻り値: {segment_id: text_reading（全文かな）}
     """
-    from reading import ReadingDictionary
+    from reading import (
+        ReadingDictionary, reading_script_doc, save_reading_script,
+    )
     from reading_judge import ContextReadingJudge, OllamaReadingJudge
-    from script_writer import DictionaryScriptWriter, OllamaScriptWriter
+    from script_writer import (
+        DictionaryScriptWriter, OllamaScriptWriter, OpenJTalkScriptWriter,
+    )
 
     dictionary = ReadingDictionary.load_json(_READINGS_PATH)
     state = memory.load_state()
@@ -413,13 +423,34 @@ def _build_reading_scripts(memory: MemoryEngine, todo: list,
                  f"話し方: {ch.speech_style or '?'}"
         for ch in state.characters.values()
     }
-    writer = OllamaScriptWriter(model=model)
+    # 台本家の選択（既定: 決定論的 OpenJTalk。LLM は READING_WRITER=llm のみ）
+    from reading_g2p import openjtalk_available
+    writer_mode = os.environ.get("READING_WRITER", "openjtalk")
+    if writer_mode == "llm":
+        writer = OllamaScriptWriter(model=model)
+        writer_name = "llm"
+        print("     🖋 台本家: LLM（OllamaScriptWriter）— READING_WRITER=llm")
+    elif openjtalk_available():
+        writer = OpenJTalkScriptWriter()
+        writer_name = "openjtalk"
+        print("     🖋 台本家: OpenJTalk（決定論・高精度）")
+    else:
+        writer = DictionaryScriptWriter()
+        writer_name = "dictionary"
+        print("     ⚠ pyopenjtalk 未導入のため辞書適用のみで継続")
+    # 名前の読みが辞書に無い場合は登録を促す（OpenJTalk は固有名詞を解決できない）
+    for name in glossary:
+        if dictionary.get(name) is None and re.search(r"[一-鿿]", name):
+            print(f"     💡 読み辞書に「{name}」の登録を推奨"
+                  f"（{_READINGS_PATH.name}）")
 
     by_chunk: dict[int, list] = {}
     for seg in todo:
         by_chunk.setdefault(seg.chunk_index, []).append(seg)
 
     readings: dict[str, str] = {}
+    script_chunks: list[tuple[int, list]] = []
+    judge_issues: list = []
     for chunk_index, segs in sorted(by_chunk.items()):
         payload = [{"id": s.id, "speaker": s.speaker, "text": s.text}
                    for s in segs]
@@ -434,6 +465,7 @@ def _build_reading_scripts(memory: MemoryEngine, todo: list,
         dictionary.update_many(result.new_readings)
         for seg in result.script.segments:
             readings[seg.id] = seg.text_reading
+        script_chunks.append((chunk_index, list(result.script.segments)))
         if result.uncovered:
             print(f"     ⚠ 漢字残留（ch{chunk_index + 1}）: {result.uncovered}")
 
@@ -452,6 +484,7 @@ def _build_reading_scripts(memory: MemoryEngine, todo: list,
                   f"{issue.detail}")
         if report.ok:
             print(f"     ⚖ 読み審査 ch{chunk_index + 1}: 問題なし")
+        judge_issues.extend(report.issues)
 
         memory.append_event("READINGS_UPDATED", chunk=chunk_index,
                             segments=len(segs),
@@ -460,6 +493,14 @@ def _build_reading_scripts(memory: MemoryEngine, todo: list,
         print(f"     📜 読み台本 ch{chunk_index + 1}: {len(segs)} セグメント"
               f"（新規読み {len(result.new_readings)}）")
     dictionary.save_json(_READINGS_PATH)
+    if script_chunks:
+        # 監査成果物（ADR-0006 §6）: 原文 + かな + 審査結果を保存して、
+        # 生成音声の読みを後から目視で検証できるようにする。
+        doc = reading_script_doc(
+            script_chunks, book_id=memory.book_id, writer=writer_name,
+            dictionary_path=str(_READINGS_PATH), judge_issues=judge_issues)
+        json_path, txt_path = save_reading_script(OUT_DIR / memory.book_id, doc)
+        print(f"     📄 読み台本を保存: {json_path.name} / {txt_path.name}")
     return readings
 
 
@@ -714,8 +755,8 @@ def export_contracts(memory: MemoryEngine, out_dir: Path) -> int:
 def show_stats(memory: MemoryEngine) -> None:
     print(f"📚 book: {memory.book_id}")
     for t in ("BOOK_IMPORTED", "CHARACTER_CREATED", "VOICE_ASSIGNED",
-              "ANALYZE_COMPLETED", "SEGMENT_DIRECTED", "AUDIO_GENERATED",
-              "EXPORT_COMPLETED"):
+              "ANALYZE_COMPLETED", "ANALYZE_REPLACED", "SEGMENT_DIRECTED",
+              "AUDIO_GENERATED", "EXPORT_COMPLETED"):
         n = memory.count_events(t)
         if n:
             print(f"  {t}: {n}")

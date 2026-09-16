@@ -19,11 +19,17 @@ if str(ENGINE_DIR) not in sys.path:
     sys.path.insert(0, str(ENGINE_DIR))
 
 from reading import (
+    READING_SCRIPT_JSON,
+    READING_SCRIPT_TEXT,
     ReadingDictionary,
     ReadingScript,
     ReadingScriptSegment,
     kanji_chars,
     kanji_residue,
+    load_reading_script,
+    reading_script_doc,
+    render_reading_script_text,
+    save_reading_script,
     validate_reading_script,
 )
 from script_writer import DictionaryScriptWriter
@@ -213,6 +219,50 @@ class TestValidateReadingScript:
 
 
 # ============================================================================
+# OpenJTalk G2P（pyopenjtalk が導入済みの環境のみ）
+# ============================================================================
+
+import pytest
+
+from reading_g2p import g2p_kana, openjtalk_available
+
+requires_openjtalk = pytest.mark.skipif(not openjtalk_available(),
+                                        reason="pyopenjtalk 未導入")
+
+
+@pytest.mark.skipif(not openjtalk_available(), reason="pyopenjtalk 未導入")
+class TestOpenJTalkG2P:
+    def test_okagesa_read_correctly(self):
+        """実機事故（LLM: おおげすさ）の回帰テスト。"""
+        out = g2p_kana("大げさ")
+        assert out in ("オーゲサ", "おおげさ", "オーゲサナ", "おおげさな")
+
+    def test_noumiso_read_correctly(self):
+        out = g2p_kana("脳味噌")
+        assert out in ("ノーミソ", "のうみそ", "ノウミソ")
+
+    def test_yuugure_read_correctly(self):
+        out = g2p_kana("夕暮れ")
+        assert out in ("ユーグレ", "ゆうぐれ", "ユウグレ")
+
+    def test_punctuation_preserved(self):
+        out = g2p_kana("走る。走る？")
+        assert "。" in out and "？" in out
+
+    def test_dictionary_wins_before_g2p(self):
+        """辞書（貼付=はりつけ）→ G2P の順なので、OpenJTalk のチョーフ誤読を上書きできる。"""
+        from reading import ReadingDictionary
+        from script_writer import OpenJTalkScriptWriter
+        result = OpenJTalkScriptWriter().write_script(
+            [{"id": "seg_001", "text": "書類を貼付する"}],
+            ReadingDictionary({"貼付": "はりつけ"}),
+        )
+        reading = result.script.segments[0].text_reading
+        assert "チョーフ" not in reading and "ちょうふ" not in reading
+        assert "はりつけ" in reading or "ハリツケ" in reading
+
+
+# ============================================================================
 # DictionaryScriptWriter（フォールバック・オフライン）
 # ============================================================================
 
@@ -241,4 +291,103 @@ class TestDictionaryScriptWriter:
         )
         assert result.script.segments[0].text_reading == "その森には言い伝えがあった"
         assert "伝" in result.uncovered["seg_001"]
+
+
+# ============================================================================
+# 監査成果物（ADR-0006 §6）— 読み台本の保存と目視検証
+# ============================================================================
+
+
+class TestReadingScriptArtifact:
+    def _segments(self):
+        return [
+            (0, [
+                ReadingScriptSegment(id="seg_000", speaker="narrator",
+                                     text="夕暮れの商店街を歩いた。",
+                                     text_reading="ユーグレノショーテンガイヲアルイタ。"),
+                ReadingScriptSegment(id="seg_001", speaker="chihaya",
+                                     text="千早は看板を見た。",
+                                     text_reading="チハヤワ看板ヲミタ。"),
+            ]),
+        ]
+
+    def test_doc_keeps_text_and_reading(self):
+        doc = reading_script_doc(self._segments(), book_id="sample",
+                                 writer="openjtalk")
+        assert doc["version"] == "1"
+        assert doc["book_id"] == "sample"
+        assert doc["writer"] == "openjtalk"
+        seg = doc["segments"][0]
+        assert seg["id"] == "seg_000" and seg["chunk_index"] == 0
+        assert seg["speaker"] == "narrator"
+        assert seg["text"] == "夕暮れの商店街を歩いた。"
+        assert seg["text_reading"] == "ユーグレノショーテンガイヲアルイタ。"
+
+    def test_doc_reports_residue_and_validates(self):
+        doc = reading_script_doc(self._segments(), book_id="sample")
+        # かな版に「看板」が残っているセグメントだけが報告される
+        assert doc["residue"] == {"seg_001": ["板", "看"]}
+        # performance.json と同じ流儀の検証を通す（契約互換）
+        assert validate_reading_script(doc) == []
+
+    def test_doc_accepts_issue_objects(self):
+        class _Issue:  # ReadingIssue（pydantic）と同じ属性を持つ
+            kind = "kanji_residue"
+            segment_id = "seg_001"
+            detail = "漢字が残存: 看板"
+
+        doc = reading_script_doc(self._segments(), judge_issues=[_Issue()])
+        assert doc["judge"]["ok"] is False
+        assert doc["judge"]["issues"] == [{
+            "kind": "kanji_residue", "segment_id": "seg_001",
+            "detail": "漢字が残存: 看板"}]
+
+    def test_render_text_pairs_original_and_kana(self):
+        doc = reading_script_doc(self._segments(), book_id="sample",
+                                 writer="openjtalk")
+        text = render_reading_script_text(doc)
+        assert "# 読み台本 sample" in text
+        assert "# 台本家: openjtalk" in text
+        assert "原文: 夕暮れの商店街を歩いた。" in text
+        assert "かな: ユーグレノショーテンガイヲアルイタ。" in text
+        assert "[seg_001] chihaya (ch1)" in text
+
+    def test_render_text_reports_residue_and_issues(self):
+        class _Issue:
+            kind = "kanji_residue"
+            segment_id = "seg_001"
+            detail = "漢字が残存: 看板"
+
+        doc = reading_script_doc(self._segments(), judge_issues=[_Issue()])
+        text = render_reading_script_text(doc)
+        assert "# 読み審査: 要確認" in text
+        assert "⚠ 漢字残留 seg_001: 板看" in text
+        assert "⚖ [kanji_residue] seg_001" in text
+
+    def test_save_and_load_roundtrip(self, tmp_path):
+        doc = reading_script_doc(self._segments(), book_id="sample",
+                                 writer="openjtalk", dictionary_path="data/x.json")
+        json_path, txt_path = save_reading_script(tmp_path / "book", doc)
+        assert json_path.name == READING_SCRIPT_JSON
+        assert txt_path.name == READING_SCRIPT_TEXT
+        loaded = load_reading_script(json_path)
+        assert loaded["segments"] == doc["segments"]
+        assert loaded["judge"]["ok"] is True
+        assert txt_path.read_text(encoding="utf-8").startswith("# 読み台本 sample")
+        # 一時ファイルを残さない（原子的保存）
+        leftovers = [p.name for p in (tmp_path / "book").iterdir()
+                     if p.suffix == ".tmp"]
+        assert leftovers == []
+
+    def test_save_creates_directory(self, tmp_path):
+        target = tmp_path / "deep" / "book"
+        json_path, _ = save_reading_script(
+            target, reading_script_doc([], book_id="empty"))
+        assert json_path.exists()
+
+    def test_empty_chunks_yield_valid_empty_doc(self):
+        doc = reading_script_doc([], book_id="empty")
+        assert doc["segments"] == [] and doc["residue"] == {}
+        assert doc["judge"] == {"ok": True, "issues": []}
+
 

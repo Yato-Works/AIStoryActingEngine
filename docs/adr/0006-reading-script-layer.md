@@ -17,6 +17,20 @@ Irodori-TTS（v4.1-Small）を Backend として採用するにあたり、公�
 メタファー: 「声は天才だが漢字が読めない演者さん」のために、
 AI 台本家が**文脈を読解した上で読み仮名付きの台本**を書く。
 
+## Update 2026-09-16: 台本家の主体を決定論的 OpenJTalk G2P に変更
+
+実機検証（sample_novel_short）で小規模 LLM（qwen3:4b）の読み仮名変換が
+実用精度に達しないことが判明した（大げさ→おおげすさ、夕暮れ→ゆうもく 等）。
+そこで §4 を次のように改訂する:
+
+- **既定の台本家は `OpenJTalkScriptWriter`（決定論・オフライン・高精度）**。
+  辞書 → OpenJTalk G2P の順で全文かなを生成する。出力はカタカナ + 長音記号
+  （大げさ→オーゲサ）だが TTS の読みとしては等価かつ正確。
+- LLM 台本家（`OllamaScriptWriter`）は `READING_WRITER=llm` 時のみ。
+- 固有名詞・稀な複合語（貼付=はりつけ 等。OpenJTalk もチョーフと誤読する）は
+  ReadingDictionary への登録で解決する。登録漏れは
+  「💡 読み辞書登録を推奨」で警告する。
+
 ## Decision
 
 ### 1. 全文かな化（All-Kana Principle）
@@ -77,6 +91,33 @@ Story Analyzer と同じ Ollama パターン（schema 強制 + JSON 抽出）で
 
 かな化・絵文字付与・キャプション生成は同一パスで適用し、
 合成は 1 回で行う。A/B 比較のときのみ意図的に複数バージョンを生成する。
+
+### 7. 監査成果物 — 「何を読み上げたか」を残す
+
+生成音声の読みを検証できないと、誤読の原因（台本か TTS か）を切り分けられない。
+合成のたびに読み台本を出力ディレクトリへ保存する:
+
+- `reading_script.json` — `segments[]{id, chunk_index, speaker, text, text_reading}`
+  + `judge`（審査結果）+ `residue`（漢字残留）。`validate_reading_script` と互換。
+- `reading_script.txt` — 原文とかなが並んだ目視用（ヘッダに台本家・辞書・審査結果）。
+
+原文とかなを**必ずペアで**残す（かなだけでは人間が照合できず、
+原文だけでは実際に発音された内容が分からない）。
+
+### 8. 再解析は「置換」（発見した事故と不変条件）
+
+本レイヤーの検証中に、より根本的な事故を発見した:
+`analyze_book` が `start_no = count_segments()` を使っていたため、
+同じ小説を再解析するたびに**別 ID の重複セグメントが積み上がり**、
+`audiobook.wav` が同じ内容を 3 回繰り返していた（実測: 9 セグメント → 27 行）。
+
+不変条件として次を採用する:
+
+- チャンクの解析結果は**置換**する（`delete_chunk_segments(chunk_index)` →
+  再挿入）。削除で `audio_path` も消えるため、再合成が自然に走る。
+- セグメント ID の開始番号は **DB 全体の件数ではなく「そのチャンクより前」の
+  件数**（`segment_start_no`）。再解析しても同じ ID になる
+  （`test_segment_replacement.py` で固定）。
 
 ## Consequences
 

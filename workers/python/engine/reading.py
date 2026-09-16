@@ -251,3 +251,116 @@ def validate_reading_script(doc: dict) -> list[str]:
         elif not seg["text_reading"].strip():
             errors.append(f"{sid}: text_reading が空です")
     return errors
+
+
+
+# ============================================================================
+# 監査成果物（ADR-0006 §6）— 「何を読み上げたか」を後から検証できるようにする
+# ============================================================================
+
+READING_SCRIPT_JSON = "reading_script.json"
+READING_SCRIPT_TEXT = "reading_script.txt"
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _issue_dict(issue: object) -> dict:
+    """ReadingIssue（pydantic）でも dict でも同じ形にそろえる。"""
+    if isinstance(issue, dict):
+        return {"kind": str(issue.get("kind", "")),
+                "segment_id": str(issue.get("segment_id", "")),
+                "detail": str(issue.get("detail", ""))}
+    return {"kind": str(getattr(issue, "kind", "")),
+            "segment_id": str(getattr(issue, "segment_id", "")),
+            "detail": str(getattr(issue, "detail", ""))}
+
+
+def reading_script_doc(chunks, *, book_id: str = "", writer: str = "",
+                       dictionary_path: str | None = None,
+                       judge_issues: list | None = None,
+                       created_at: str | None = None) -> dict:
+    """読み台本の監査ドキュメントを組み立てる。
+
+    Args:
+        chunks: [(chunk_index, [ReadingScriptSegment, ...]), ...]
+    Returns:
+        dict: validate_reading_script と互換（segments[].text / .text_reading）。
+
+    TTS に実際に渡した「かな版」と、人間が照合するための「原文」を両方持ち、
+    漢字残留と読み審査の結果を添える。音声を聴く前に台本を目視できることが
+    「読み間違えの切り分け」の前提になる。
+    """
+    issues = [_issue_dict(i) for i in (judge_issues or [])]
+    segments = []
+    for chunk_index, segs in chunks:
+        for seg in segs:
+            segments.append({
+                "id": seg.id,
+                "chunk_index": chunk_index,
+                "speaker": seg.speaker,
+                "text": seg.text,
+                "text_reading": seg.text_reading,
+            })
+    residue = {s["id"]: kanji_residue(s["text_reading"])
+               for s in segments if kanji_residue(s["text_reading"])}
+    return {
+        "version": "1",
+        "book_id": book_id,
+        "writer": writer,
+        "dictionary": dictionary_path or "",
+        "created_at": created_at or _now_iso(),
+        "segments": segments,
+        "judge": {"ok": not issues, "issues": issues},
+        "residue": residue,
+    }
+
+
+def render_reading_script_text(doc: dict) -> str:
+    """監査ドキュメントを人間可読テキストにする（原文 + かなを並べる）。"""
+    judge = doc.get("judge") or {}
+    lines = [
+        f"# 読み台本 {doc.get('book_id', '')}",
+        f"# 台本家: {doc.get('writer', '?')}",
+        f"# 辞書: {doc.get('dictionary', '') or '(なし)'}",
+        f"# 生成: {doc.get('created_at', '')}",
+        f"# セグメント数: {len(doc.get('segments') or [])}",
+        f"# 読み審査: {'問題なし' if judge.get('ok') else '要確認'}",
+    ]
+    for seg_id, chars in (doc.get("residue") or {}).items():
+        lines.append(f"#   ⚠ 漢字残留 {seg_id}: {''.join(chars)}")
+    for issue in judge.get("issues") or []:
+        lines.append(f"#   ⚖ [{issue.get('kind')}] {issue.get('segment_id')}: "
+                     f"{issue.get('detail')}")
+    lines.append("")
+    for seg in doc.get("segments") or []:
+        chunk = int(seg.get("chunk_index") or 0) + 1
+        lines.append(f"[{seg.get('id')}] {seg.get('speaker', '')} (ch{chunk})")
+        lines.append(f"  原文: {seg.get('text', '')}")
+        lines.append(f"  かな: {seg.get('text_reading', '')}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def save_reading_script(out_dir: str | Path, doc: dict) -> tuple[Path, Path]:
+    """読み台本を JSON（機械可読）と txt（目視用）で原子的に保存する。"""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    json_path = out / READING_SCRIPT_JSON
+    txt_path = out / READING_SCRIPT_TEXT
+    tmp_json = json_path.with_suffix(".json.tmp")
+    tmp_json.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8")
+    os.replace(tmp_json, json_path)
+    tmp_txt = txt_path.with_suffix(".txt.tmp")
+    tmp_txt.write_text(render_reading_script_text(doc), encoding="utf-8")
+    os.replace(tmp_txt, txt_path)
+    return json_path, txt_path
+
+
+def load_reading_script(path: str | Path) -> dict:
+    """保存済みの読み台本 JSON を読み込む（BOM 付き UTF-8 も許容）。"""
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+

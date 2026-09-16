@@ -579,6 +579,34 @@ class MemoryEngine:
         ).fetchone()
         return int(row["n"])
 
+    def delete_chunk_segments(self, chunk_index: int) -> int:
+        """指定チャンクのセグメントを削除する（再解析時の「置換」用）。
+
+        再解析で同じチャンクを保存し直すとき、既存行を残すと別 ID の重複行が
+        増えて音声が繰り返される（実機で発生した事故）。戻り値は削除件数。
+        audio_path も一緒に消えるので、次回の TTS で再合成される。
+        """
+        cur = self.conn.execute(
+            "DELETE FROM segments WHERE book_id=? AND chunk_index=?",
+            (self.book_id, chunk_index),
+        )
+        self.conn.commit()
+        return int(cur.rowcount or 0)
+
+    def segment_start_no(self, chunk_index: int) -> int:
+        """セグメント ID の開始番号 — 先行チャンクの合計件数（決定論的）。
+
+        DB 全体の件数を使うと、再解析のたびに番号がずれて重複が生まれる。
+        「このチャンクより前」の件数だけを数えることで、
+        同じ小説を何度解析しても同じ ID になる。
+        """
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM segments "
+            "WHERE book_id=? AND chunk_index<?",
+            (self.book_id, chunk_index),
+        ).fetchone()
+        return int(row["n"])
+
     def save_segment(self, seg: DirectedSegment) -> None:
         self.conn.execute(
             """INSERT OR REPLACE INTO segments(book_id, id, chapter, chunk_index,

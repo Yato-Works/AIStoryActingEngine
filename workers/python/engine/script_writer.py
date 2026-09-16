@@ -245,6 +245,39 @@ def _post_with_retry(url: str, payload: dict, timeout: float,
 
 
 # ============================================================================
+# OpenJTalk Script Writer（決定論・オフライン・高精度）
+# ============================================================================
+
+
+class OpenJTalkScriptWriter:
+    """OpenJTalk G2P で全文かな台本を書く決定論的 Script Writer。
+
+    LLM を一切使わない。名前など辞書に必要な読みは
+    ReadingDictionary（事前登録 or キャスティング由来）が担保する。
+    ADR-0006 §4 の主体。精度は LLM より高い（大げさ→おおげさ 等）。
+    """
+
+    name = "openjtalk"
+
+    def write_script(
+        self,
+        segments: list[dict],
+        dictionary: ReadingDictionary,
+        character_glossary: dict[str, str] | None = None,
+        chunk_index: int = 0,
+    ) -> ScriptWriterResult:
+        from reading_g2p import g2p_kana
+
+        prepared = _prepare_segments(segments, dictionary)
+        raw = {"segments": [
+            {"id": s.get("id", ""),
+             "text_reading": g2p_kana(str(s.get("text", "")))}
+            for s in prepared
+        ]}
+        return _build_result(prepared, raw, dictionary, chunk_index)
+
+
+# ============================================================================
 # フォールバック: 辞書適用のみ（LLM 不要・オフライン）
 # ============================================================================
 

@@ -37,6 +37,30 @@ DB_PATH = Path(__file__).parent / "data" / "story.db"
 CHUNK_TARGET = 850
 
 
+def _load_dotenv() -> None:
+    """プロジェクト内の .env ファイルを探索して環境変数に注入する。"""
+    curr = Path(__file__).resolve().parent
+    for _ in range(4):
+        env_file = curr / ".env"
+        if env_file.is_file():
+            try:
+                for line in env_file.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip().strip("'\"")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+            except Exception:
+                pass
+            break
+        curr = curr.parent
+
+
+_load_dotenv()
+
+
 def _setup_stdio() -> None:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -494,7 +518,8 @@ def _build_reading_scripts(memory: MemoryEngine, todo: list,
     )
     from reading_judge import ContextReadingJudge, OllamaReadingJudge
     from script_writer import (
-        DictionaryScriptWriter, OllamaScriptWriter, OpenJTalkScriptWriter,
+        DictionaryScriptWriter, GeminiScriptWriter, OllamaScriptWriter,
+        OpenJTalkScriptWriter,
     )
 
     dictionary = ReadingDictionary.load_json(_READINGS_PATH)
@@ -505,10 +530,17 @@ def _build_reading_scripts(memory: MemoryEngine, todo: list,
                  f"話し方: {ch.speech_style or '?'}"
         for ch in state.characters.values()
     }
-    # 台本家の選択（既定: 決定論的 OpenJTalk。LLM は READING_WRITER=llm のみ）
+    # 台本家の選択（既定: GEMINI_API_KEY があれば Gemini、次いで OpenJTalk）
     from reading_g2p import openjtalk_available
-    writer_mode = os.environ.get("READING_WRITER", "openjtalk")
-    if writer_mode == "llm":
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    default_writer = "gemini" if gemini_key else "openjtalk"
+    writer_mode = os.environ.get("READING_WRITER", default_writer)
+    if writer_mode == "gemini":
+        gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        writer = GeminiScriptWriter(model=gemini_model, api_key=gemini_key)
+        writer_name = "gemini"
+        print(f"     🖋 台本家: Gemini（{gemini_model}・文脈読解＋平仮名化＋45種演技絵文字演出）")
+    elif writer_mode == "llm":
         writer = OllamaScriptWriter(model=model)
         writer_name = "llm"
         print("     🖋 台本家: LLM（OllamaScriptWriter）— READING_WRITER=llm")

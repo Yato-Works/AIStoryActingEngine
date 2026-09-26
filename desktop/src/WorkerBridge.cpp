@@ -249,6 +249,15 @@ void WorkerBridge::assignCasting(const QString &bookId, const QString &character
     send(makeRequest(nextId(), QStringLiteral("assign_casting"), params));
 }
 
+void WorkerBridge::applyCastingsAndRegen(const QString &bookId, const QString &provider)
+{
+    QJsonObject params{
+        {"book_id", bookId},
+        {"provider", provider}
+    };
+    send(makeRequest(nextId(), QStringLiteral("apply_castings_and_regen"), params));
+}
+
 void WorkerBridge::previewVoice(const QString &text, const QString &voiceId,
                                 const QString &style, double pitch, double pace,
                                 const QString &provider)
@@ -262,6 +271,37 @@ void WorkerBridge::previewVoice(const QString &text, const QString &voiceId,
         {"provider", provider}
     };
     send(makeRequest(nextId(), QStringLiteral("preview_voice"), params));
+}
+
+void WorkerBridge::previewVoiceIrodori(const QString &text, const QString &voiceId,
+                                      const QString &caption, double pace,
+                                      bool useGemini,
+                                      const QVariantMap &options)
+{
+    QJsonObject params{
+        {"text", text},
+        {"voice_id", voiceId},
+        {"caption", caption},
+        {"pace", pace},
+        {"provider", QStringLiteral("irodori")},
+        {"use_gemini_script", useGemini}
+    };
+    if (!options.isEmpty()) {
+        QJsonObject optsObj = QJsonObject::fromVariantMap(options);
+        for (auto it = optsObj.begin(); it != optsObj.end(); ++it) {
+            params.insert(it.key(), it.value());
+        }
+    }
+    send(makeRequest(nextId(), QStringLiteral("preview_voice"), params));
+}
+
+void WorkerBridge::imagineCharacterVoice(const QString &bookId, const QString &characterId)
+{
+    QJsonObject params{
+        {"book_id", bookId},
+        {"character_id", characterId}
+    };
+    send(makeRequest(nextId(), QStringLiteral("imagine_character_voice"), params));
 }
 
 void WorkerBridge::listSeries()
@@ -346,7 +386,7 @@ void WorkerBridge::handleResponse(const QJsonObject &resp)
         emit eventsLoaded(toVariantList(result.toObject().value("events")));
     } else if (method == QStringLiteral("search")) {
         emit searchResults(toVariantList(result.toObject().value("results")));
-    } else if (method == QStringLiteral("start_job")) {
+    } else if (method == QStringLiteral("start_job") || method == QStringLiteral("apply_castings_and_regen")) {
         const QJsonObject o = result.toObject();
         const QString jobId = o.value("job_id").toString();
         emit jobStarted(jobId, o.value("book_id").toString());
@@ -383,6 +423,9 @@ void WorkerBridge::handleResponse(const QJsonObject &resp)
         emit castingAssigned(o.value("character_id").toString(), o.value("voice_id").toString());
     } else if (method == QStringLiteral("preview_voice")) {
         emit voicePreviewReady(result.toObject().value("path").toString());
+    } else if (method == QStringLiteral("imagine_character_voice")) {
+        const QJsonObject o = result.toObject();
+        emit characterVoiceImagined(o.value("voice_design").toObject().toVariantMap());
     } else if (method == QStringLiteral("list_series")) {
         emit seriesLoaded(toVariantList(result.toObject().value("series")));
     } else if (method == QStringLiteral("upsert_series")) {

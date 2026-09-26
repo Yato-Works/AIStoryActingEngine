@@ -50,7 +50,7 @@ class VoiceProfile(BaseModel):
     habits: dict[str, str] = Field(default_factory=dict)  # thinking/surprise/disbelief 口頭語
     timing_habit: float = 0.0      # 0.0 .. 1.0  (response delay / timing癖)
     source: str = "builtin"        # builtin / user / cloned
-    tags: list[str] = Field(default_factory=list)  # ["杉田智和風", "渋い", "低音", "中年"]
+    tags: list[str] = Field(default_factory=list)  # ["重厚", "渋い", "低音", "成年"]
     description: str = ""
     # --- TTS Abstraction §8: Voice Consistency ---
     # キャラクターごとに Backend 別の設定を保持する。

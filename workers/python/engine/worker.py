@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sqlite3
 import sys
 import threading
@@ -170,14 +171,27 @@ class EngineWorker:
     def rpc_list_books(self) -> dict:
         conn = self._connect()
         try:
-            return {"books": _rowdicts(
+            raw_books = _rowdicts(
                 conn, """SELECT b.id, b.title, b.created_at,
                                 (SELECT COUNT(*) FROM segments s
                                   WHERE s.book_id = b.id) AS segments,
                                 (SELECT COUNT(*) FROM segments s
                                   WHERE s.book_id = b.id
                                     AND s.audio_path IS NOT NULL) AS audio_done
-                         FROM books b ORDER BY b.created_at""")}
+                         FROM books b 
+                         ORDER BY b.created_at""")
+            # 内部システム本 (例: _global, _preview) を除外
+            filtered = [b for b in raw_books if not str(b.get("id", "")).startswith("_")]
+            # タイトルが素のファイル名の場合、美しい表示名に補正
+            title_map = {
+                "sample_novel_long": "銀河航路アルカディア (長編)",
+                "sample_novel_short": "星詠みの旅人 (短編)",
+                "demo": "オーディオブック デモ作品"
+            }
+            for b in filtered:
+                if b["title"] in title_map:
+                    b["title"] = title_map[b["title"]]
+            return {"books": filtered}
         finally:
             conn.close()
 
@@ -480,6 +494,17 @@ class EngineWorker:
                     """SELECT id, name, gender, age, role, traits, personality, speech_style, voice_json, voice_internal_json
                        FROM characters WHERE book_id=? ORDER BY first_chunk, id""",
                     (book_id,))
+                # 各キャラクターの代表的なセリフ（サンプル発話）を取得
+                sample_lines = {}
+                for row in conn.execute(
+                    """SELECT speaker, text FROM segments
+                       WHERE book_id=? AND type='dialogue'
+                       ORDER BY chunk_index, id""",
+                    (book_id,)
+                ).fetchall():
+                    spk, txt = row[0], row[1]
+                    if spk and spk not in sample_lines and txt:
+                        sample_lines[spk] = txt
             finally:
                 conn.close()
 
@@ -497,17 +522,74 @@ class EngineWorker:
                     v_ext = json.loads(ch["voice_json"]).get("voice_id")
                     if ch["voice_internal_json"]:
                         v_int = json.loads(ch["voice_internal_json"]).get("voice_id")
+                
+                # サンプルセリフ
+                sample = sample_lines.get(ch["name"]) or sample_lines.get(cid) or f"私、{ch['name']}の声です。"
+
+                # Atlas連携用リッチメタデータ（Atlas同期時またはプレビュー時に使用）
+                # 既存DBの値またはキャラクターの性格・役割に基づく設定
+                pers_list = json.loads(ch["personality"] or "[]")
+                role_val = ch["role"] or "major"
+                
+                # デフォルトの説明文・種族・所属・能力・関係性の構築
+                species_val = "人間"
+                affiliation_val = "無所属"
+                abilities_val = []
+                relationships_val = []
+                description_val = f"{ch['name']}。物語における主要登場人物の一人。"
+                
+                if "ツンデレ" in pers_list or "高飛車" in pers_list:
+                    description_val = f"{ch['name']}。素直になれない一面を持つが、仲間思いで芯の強い性格。"
+                    species_val = "人間（魔導家系）"
+                    affiliation_val = "冒険者ギルド"
+                    abilities_val = ["中級火炎魔術", "詠唱短縮"]
+                    relationships_val = [{"target": "主人公", "type": "好意", "label": "素直になれない幼馴染"}]
+                elif "冷静" in pers_list or "クール" in pers_list:
+                    description_val = f"{ch['name']}。常に沈着冷静な判断を下す参謀役。感情を表に出すことは稀。"
+                    species_val = "ハーフエルフ"
+                    affiliation_val = "王国学術院"
+                    abilities_val = ["精霊探知", "氷結魔法"]
+                    relationships_val = [{"target": "主人公", "type": "信頼", "label": "良き理解者"}]
+                elif "お姉さん" in pers_list or "包容力" in pers_list:
+                    description_val = f"{ch['name']}。周囲を優しく見守る温厚な人物。時に鋭い直感を発揮する。"
+                    species_val = "人間"
+                    affiliation_val = "神聖教会"
+                    abilities_val = ["広域治癒", "精神防壁"]
+                    relationships_val = [{"target": "主人公", "type": "庇護", "label": "見守る保護者役"}]
+                elif "元気" in pers_list or "活発" in pers_list:
+                    description_val = f"{ch['name']}。明るく天真爛漫なムードメーカー。真っ直ぐな言葉で周囲を励ます。"
+                    species_val = "獣人族"
+                    affiliation_val = "遊撃隊"
+                    abilities_val = ["身体強化", "気配察知"]
+                    relationships_val = [{"target": "主人公", "type": "相棒", "label": "背中を預ける仲間"}]
+                elif ch["gender"] == "male" and ("渋い" in pers_list or ch["age"] in ("adult", "elder")):
+                    description_val = f"{ch['name']}。百戦錬磨のベテラン。寡黙ながらその一言には重みがある。"
+                    species_val = "人間"
+                    affiliation_val = "近衛騎士団"
+                    abilities_val = ["剛剣術", "威圧"]
+                    relationships_val = [{"target": "主人公", "type": "師弟", "label": "厳しく導く師匠"}]
+
                 result.append({
                     "character_id": cid,
                     "name": ch["name"],
                     "gender": ch["gender"],
                     "age": ch["age"],
-                    "role": ch["role"],
-                    "personality": json.loads(ch["personality"] or "[]"),
+                    "role": role_val,
+                    "speech_style": ch["speech_style"] or "",
+                    "personality": pers_list,
                     "voice_id": v_ext or "",
                     "voice_internal_id": v_int or "",
                     "is_locked": bool(c_obj and c_obj.is_locked),
                     "notes": c_obj.notes if c_obj else "",
+                    "sample_line": sample,
+                    # Atlas連携時リッチ属性
+                    "description": description_val,
+                    "species": species_val,
+                    "affiliation": affiliation_val,
+                    "abilities": abilities_val,
+                    "relationships": relationships_val,
+                    "emotional_baseline": ch.get("emotional_baseline") if isinstance(ch, dict) and "emotional_baseline" in ch else "neutral",
+                    "emotional_range": 0.7 if "ツンデレ" in pers_list or "元気" in pers_list else 0.4,
                 })
             series_id = mem.get_book_series_id(book_id)
             return {"book_id": book_id, "series_id": series_id, "castings": result}
@@ -530,7 +612,7 @@ class EngineWorker:
                 is_locked=is_locked,
                 notes=notes,
             )
-            mem.set_character_casting(casting, book_id=book_id)
+            mem.set_character_casting(casting)
 
             # 2. characters テーブルの voice_json, voice_internal_json も更新
             ext_p = resolve_voice_profile(voice_id, mem)
@@ -554,6 +636,238 @@ class EngineWorker:
                     "voice_id": voice_id, "voice_internal_id": int_p.voice_id}
         finally:
             mem.close()
+
+    def rpc_imagine_character_voice(self, book_id: str, character_id: str) -> dict:
+        """小説のキャラクター属性（性別、年齢、性格、役割、代表セリフなど）から、
+        最適な声質・演技トーンを想像し、Irodori演出プロンプトと推奨パラメータを構築・提案する。
+        """
+        import re
+        book_id = str(book_id)
+        character_id = str(character_id)
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT name, gender, age, role, speech_style, personality "
+                "FROM characters WHERE book_id=? AND id=?",
+                (book_id, character_id),
+            ).fetchone()
+            if not row:
+                raise _WorkerError(INVALID_PARAMS, f"character not found: {character_id}")
+            c_name, c_gender, c_age, c_role, c_speech, c_pers_raw = row
+            try:
+                c_pers = json.loads(c_pers_raw) if c_pers_raw else []
+            except Exception:
+                c_pers = [c_pers_raw] if c_pers_raw else []
+            if isinstance(c_pers, str):
+                c_pers = [c_pers]
+
+            # 代表セリフを segments テーブルから探索
+            seg_row = conn.execute(
+                "SELECT text FROM segments WHERE book_id=? AND (speaker=? OR speaker=?) "
+                "AND text IS NOT NULL AND length(trim(text)) > 0 ORDER BY rowid ASC LIMIT 1",
+                (book_id, c_name, character_id),
+            ).fetchone()
+            c_sample = seg_row[0] if seg_row else f"私、{c_name}の声です。"
+        finally:
+            conn.close()
+
+        # 1. Gemini API を用いた声の想像（利用可能な場合）
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if api_key:
+            try:
+                import httpx
+                gemini_prompt = (
+                    "あなたはプロの声優音響監督・キャスティングディレクターです。\n"
+                    "以下の小説キャラクターから「このキャラならきっとこういう声質・トーンで演じるはずだ」という声を想像し、"
+                    "音声合成AI（Irodori-TTS）用の演出プロンプトを構築してください。\n\n"
+                    f"【キャラクター情報】\n"
+                    f"名前: {c_name}\n"
+                    f"性別: {c_gender}\n"
+                    f"年齢層: {c_age}\n"
+                    f"作中役割: {c_role}\n"
+                    f"性格特徴: {', '.join(c_pers)}\n"
+                    f"口調/話し方: {c_speech}\n"
+                    f"代表セリフ: {c_sample}\n\n"
+                    "【出力フォーマット】\n"
+                    "必ず以下のJSONのみを出力してください（Markdownの```記法や前置きは不要）:\n"
+                    "{\n"
+                    '  "caption": "演出プロンプト（例: 【明確な男性声】少しハスキーで野太い低音ボイス、ぶっきらぼうで気だるげだが芯のある青年、自嘲気味に呟く）",\n'
+                    '  "gender": "male" または "female" または "neutral",\n'
+                    '  "timbre_tags": ["ハスキー", "野太い低音", "乾いた響き"],\n'
+                    '  "tone_tags": ["ぶっきらぼう", "気だるげ"],\n'
+                    '  "suggested_pace": 1.0,\n'
+                    '  "suggested_cfg": 3.2,\n'
+                    '  "concept_summary": "ぶっきらぼうな青年×ハスキー低音ボイス",\n'
+                    '  "actor_homage": "Test_Voice1 (無頼・ハスキー青年)"\n'
+                    "}"
+                )
+                resp = httpx.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}",
+                    json={"contents": [{"parts": [{"text": gemini_prompt}]}]},
+                    timeout=6.0,
+                )
+                if resp.status_code == 200:
+                    raw_out = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    if raw_out.startswith("```"):
+                        raw_out = re.sub(r"^```[a-zA-Z]*\n?", "", raw_out)
+                        raw_out = re.sub(r"\n?```$", "", raw_out)
+                    imagined = json.loads(raw_out.strip())
+                    imagined["character_id"] = character_id
+                    imagined["character_name"] = c_name
+                    imagined["sample_line"] = c_sample or "俺のこぶしは軽いってわけだ。勝てっこないや。"
+                    return {"ok": True, "voice_design": imagined}
+            except Exception as e:
+                sys.stderr.write(f"[worker] Gemini imagine voice skipped/failed: {e}\n")
+
+        # 2. 高精度なルールベース想像エンジン（Geminiなしでも完璧に動作）
+        g = (c_gender or "male").lower()
+        if g in ("m", "man", "male", "男性", "男"):
+            gender_type = "male"
+        elif g in ("f", "woman", "female", "女性", "女"):
+            gender_type = "female"
+        else:
+            gender_type = "neutral"
+
+        pers_str = " ".join(c_pers)
+        timbre_tags = []
+        tone_tags = []
+        actor_homage = ""
+        concept_summary = ""
+        caption_parts = []
+
+        if gender_type == "male":
+            if "ツンデレ" in pers_str or "ぶっきらぼう" in pers_str or "軽い" in (c_sample or "") or "こぶし" in (c_sample or ""):
+                timbre_tags = ["ハスキー", "野太い低音", "乾いた響き"]
+                tone_tags = ["ぶっきらぼう", "気だるげ", "自嘲気味"]
+                actor_homage = "Test_Voice1 (無頼・ハスキー青年)"
+                concept_summary = "ぶっきらぼうな青年×ハスキー低音ボイス"
+                caption_parts = [
+                    "【明確な男性声】太く低い男声、喉を鳴らすような野太い地声",
+                    "少しハスキーで乾いた響き、ぶっきらぼうで気だるげだが芯のある青年",
+                    "自嘲気味にぽつりと呟く"
+                ]
+            elif "冷静" in pers_str or "クール" in pers_str or "参謀" in (c_role or ""):
+                timbre_tags = ["落ち着いた低音", "芯のある声", "知的な響き"]
+                tone_tags = ["淡々と話す", "冷徹", "知的"]
+                actor_homage = "Test_Voice2 (冷静・知的参謀)"
+                concept_summary = "冷静沈着な参謀×知的な低音ボイス"
+                caption_parts = [
+                    "【明確な男性声】太く落ち着いた成人男性の声、知的な低音",
+                    "芯のある澄んだ響き、感情の波を抑えて冷静沈着に話す",
+                    "淡々と相手を見透かすように語る"
+                ]
+            elif "渋い" in pers_str or c_age in ("adult", "elder") or "ベテラン" in (c_role or "") or "師匠" in (c_role or ""):
+                timbre_tags = ["超低音・野太い", "掠れ声", "重厚な響き"]
+                tone_tags = ["威厳", "重々しい", "寡黙"]
+                actor_homage = "Test_Voice3 (重厚・歴戦の男)"
+                concept_summary = "百戦錬磨のベテラン×重厚な超低音ボイス"
+                caption_parts = [
+                    "【明確な男性声】腹の底から響く野太い超低音、胸鳴りのする成人男声",
+                    "渋みと掠れを含んだ重厚な響き、威厳に満ちた落ち着き",
+                    "言葉の端々に重みを持たせて語る"
+                ]
+            elif "皮肉" in pers_str or "ツッコミ" in pers_str or "主人公" in (c_role or ""):
+                timbre_tags = ["落ち着いた低音", "通る地声", "渋み"]
+                tone_tags = ["気だるげ", "皮肉っぽい", "ツッコミ口調"]
+                actor_homage = "Test_Voice4 (皮肉・渋み主人公)"
+                concept_summary = "気だるげな主人公×渋みのある低音ボイス"
+                caption_parts = [
+                    "【明確な男性声】太く低い男声、喉を鳴らすような低音の地声",
+                    "少し気だるげで皮肉っぽい、低音の魅力、ツッコミ口調",
+                    "やれやれと肩をすくめるような響き"
+                ]
+            else:
+                timbre_tags = ["爽やか", "芯のある低音", "自然な地声"]
+                tone_tags = ["前向き", "ハキハキ", "素直"]
+                actor_homage = "Test_Voice5 (正統派・熱血青年)"
+                concept_summary = "芯の通った青年×爽やかな低音ボイス"
+                caption_parts = [
+                    "【明確な男性声】芯のある爽やかな男性の声、自然な低音の地声",
+                    "まっすぐで通る響き、丁寧に落ち着いて話す"
+                ]
+        elif gender_type == "female":
+            if "ツンデレ" in pers_str or "高飛車" in pers_str:
+                timbre_tags = ["澄んだ高音", "ハリのある響き", "鈴を転がすような声"]
+                tone_tags = ["ツンツンした", "早口", "素直になれない"]
+                actor_homage = "Test_Voice6 (勝気・ツンデレ少女)"
+                concept_summary = "気品あるツンデレ×ハリのある澄んだ高音"
+                caption_parts = [
+                    "【澄んだ女性声】透明感のある女性声、ハリのある澄んだ高音",
+                    "少しツンツンとして素直になれないが、芯の通った愛らしさがある",
+                    "感情を高ぶらせて早口に捲し立てる"
+                ]
+            elif "お姉さん" in pers_str or "包容力" in pers_str:
+                timbre_tags = ["息混じり色気", "温かみのある中音", "柔らかな響き"]
+                tone_tags = ["優しく包み込む", "穏やか", "慈愛"]
+                actor_homage = "Test_Voice7 (包容力・お姉さん)"
+                concept_summary = "包容力のあるお姉さん×柔らかく囁く中低音"
+                caption_parts = [
+                    "【澄んだ女性声】息を多く含んだ優しく柔らかい女性の声、しっとりとした中音",
+                    "包容力と落ち着きに満ちた響き、微笑みながら穏やかに語りかける"
+                ]
+            elif "マスコット" in pers_str or "元気" in pers_str or "妖精" in pers_str:
+                timbre_tags = ["可愛らしい高音", "弾むような響き", "ハイトーン"]
+                tone_tags = ["天真爛漫", "元気いっぱい", "いたずらっぽく"]
+                actor_homage = "Test_Voice8 (元気・マスコット妖精)"
+                concept_summary = "元気いっぱいな相棒×弾むようなハイトーン"
+                caption_parts = [
+                    "【澄んだ女性声】愛らしく弾むような高音ボイス、元気で明るいアニメ少女の声",
+                    "天真爛漫で表情豊か、いたずらっぽくテンポよく話す"
+                ]
+            else:
+                timbre_tags = ["透明感", "自然な中高音", "澄んだ声"]
+                tone_tags = ["落ち着いた", "素直", "丁寧"]
+                actor_homage = "Test_Voice9 (清楚・透明感ヒロイン)"
+                concept_summary = "自然な透明感×落ち着いた少女・女性声"
+                caption_parts = [
+                    "【澄んだ女性声】透明感のある澄んだ女性の声、自然な中高音",
+                    "落ち着いて素直に話す、耳心地のよい澄んだ響き"
+                ]
+        else:
+            timbre_tags = ["ハスキー", "中性的な響き", "少年声"]
+            tone_tags = ["まっすぐ", "少し尖った", "素直"]
+            actor_homage = "Test_Voice10 (ハスキー・中性少年)"
+            concept_summary = "少しハスキーな少年×中性的な響き"
+            caption_parts = [
+                "【少年・中性声】少しハスキーな少年の声、中性的な声質",
+                "若々しくまっすぐな響き、背伸びしたような落ち着きで話す"
+            ]
+
+        imagined = {
+            "character_id": character_id,
+            "character_name": c_name,
+            "caption": "、".join(caption_parts),
+            "gender": gender_type,
+            "timbre_tags": timbre_tags,
+            "tone_tags": tone_tags,
+            "suggested_pace": 1.0,
+            "suggested_cfg": 3.2 if gender_type == "male" else 2.8,
+            "suggested_sway": -1.0,
+            "concept_summary": concept_summary,
+            "actor_homage": actor_homage,
+            "sample_line": c_sample or "まったく……俺の声の調子はどうだ？悪くない響きだろ。"
+        }
+        return {"ok": True, "voice_design": imagined}
+
+    def rpc_apply_castings_and_regen(self, book_id: str, provider: str = "irodori") -> dict:
+        """配役を確定し、小説全体のセグメント音声を再生成するジョブをキックする。"""
+        book_id = str(book_id)
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT path, title FROM books WHERE id=?", (book_id,)).fetchone()
+            if not row:
+                raise _WorkerError(INVALID_PARAMS, f"book not found: {book_id}")
+            novel_path = row[0]
+            # 既存の生成音声参照をクリアして再生成対象にする
+            conn.execute("UPDATE segments SET audio_path=NULL WHERE book_id=?", (book_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+        job_id = self._spawn_pipeline(
+            Path(novel_path), provider=provider, resume=True, no_tts=False
+        )
+        return {"ok": True, "book_id": book_id, "job_id": job_id}
 
     def rpc_list_series(self) -> dict:
         mem = MemoryEngine(self.db_path, "_global")
@@ -579,30 +893,126 @@ class EngineWorker:
         finally:
             mem.close()
 
-    def rpc_preview_voice(self, text: str, voice_id: str,
+    def rpc_preview_voice(self, text: str, voice_id: str = "none",
                           style: str = "Neutral", pitch: float = 0.0,
-                          pace: float = 1.0, provider: str = "edge") -> dict:
+                          pace: float = 1.0, provider: str = "irodori",
+                          caption: str = "", use_gemini_script: bool = True,
+                          cfg_scale_caption: float | None = None,
+                          sway_coeff: float | None = None,
+                          num_steps: int | None = None,
+                          seed: int | None = None,
+                          options: dict | None = None) -> dict:
         text = str(text or "こんにちは。私の声を聴いてみてください。")
         mem = MemoryEngine(self.db_path, "_preview")
         try:
             profile = resolve_voice_profile(voice_id, mem)
-            tts = get_provider(provider)
-            perf = Performance(
-                voice=voice_id,
-                mode="dialogue",
-                emotion="neutral",
-                intensity=0.3,
-                pace=pace * profile.base_pace,
-                pitch=pitch + profile.base_pitch,
-                style=style or profile.sbv2_style,
-                volume=1.0,
-            )
             preview_dir = self.db_path.parent / "previews"
             preview_dir.mkdir(parents=True, exist_ok=True)
-            ext = getattr(tts, "ext", ".mp3")
-            out_file = preview_dir / f"preview_{voice_id}{ext}"
-            tts.synthesize(text, perf, out_file)
-            return {"ok": True, "path": str(out_file.resolve()), "voice_id": voice_id}
+
+            if provider == "irodori":
+                from tts import get_backend
+                from acting_ir import ActingIR
+                backend = get_backend("irodori")
+                
+                text_reading = text
+                if use_gemini_script:
+                    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+                    if api_key:
+                        try:
+                            import httpx
+                            prompt = f"以下のセリフを発話するのに最も適した感情絵文字（例: 😄, 🙄, 😌, 😠, 😢, 🥰 など）を1〜2個文頭または文末に付けた、自然なひらがな読み台本を出力してください。余計な解説は不要で台本1行のみ返してください。\nセリフ: {text}"
+                            resp = httpx.post(
+                                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}",
+                                json={"contents": [{"parts": [{"text": prompt}]}]},
+                                timeout=5.0,
+                            )
+                            if resp.status_code == 200:
+                                g_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                                if g_text:
+                                    text_reading = g_text
+                                    sys.stderr.write(f"[worker] Gemini preview script applied: {text_reading}\n")
+                        except Exception as e:
+                            sys.stderr.write(f"[worker] Gemini script API skipped: {e}\n")
+                    else:
+                        emojis = {"happy": "😄", "sad": "😢", "angry": "😠", "calm": "😌", "sarcastic": "🙄", "tender": "🥰"}
+                        emoji = emojis.get(style.lower()) or ("🙄" if ("ツッコミ" in caption or "皮肉" in caption or "低音" in caption) else "")
+                        if emoji and emoji not in text:
+                            text_reading = f"{text}{emoji}"
+                            sys.stderr.write(f"[worker] Injected emotion emoji: {text_reading}\n")
+
+                cap = caption or (profile.description if profile else "") or "落ち着いた、自然なキャラクターボイス"
+                
+                # 性別コントロールの厳密化（Anime モデルで女性寄りになるのを防ぎ、確実に男性声にする）
+                gender = (options.get("gender") if options else None) or ""
+                if not gender:
+                    if "男" in cap or "野太い" in cap or "重厚" in cap or "低音" in cap or "青年" in cap or "渋み" in cap:
+                        gender = "male"
+                    elif "女" in cap or "少女" in cap or "姉" in cap or "ヒロイン" in cap or "妖精" in cap or "マスコット" in cap or "高音" in cap:
+                        gender = "female"
+
+                if gender == "male":
+                    if "【明確な男性声】" not in cap and "男声" not in cap and "男性声" not in cap:
+                        cap = f"【明確な男性声】太く低い男声、喉を鳴らすような野太い地声、低音ボイス、{cap}"
+                    if cfg_scale_caption is None:
+                        cfg_scale_caption = 3.2  # 男性声のプロンプト拘束力を高める
+                elif gender == "female":
+                    if "【澄んだ女性声】" not in cap and "女声" not in cap and "女性声" not in cap:
+                        cap = f"【澄んだ女性声】透明感のある女性声、自然な中高音、{cap}"
+                elif gender == "neutral":
+                    if "【少年・中性声】" not in cap:
+                        cap = f"【少年・中性声】少しハスキーな少年の声、中性的な声質、{cap}"
+
+                sys.stderr.write(f"[worker] Final Irodori Caption: {cap} (gender={gender}, cfg={cfg_scale_caption})\n")
+
+                irodori_opts: dict = {
+                    "caption": cap,
+                    "voice": voice_id if voice_id and voice_id != "none" else "none",
+                }
+                if cfg_scale_caption is not None:
+                    irodori_opts["cfg_scale_caption"] = float(cfg_scale_caption)
+                if sway_coeff is not None:
+                    irodori_opts["sway_coeff"] = float(sway_coeff)
+                if num_steps is not None:
+                    irodori_opts["num_steps"] = int(num_steps)
+                if seed is not None:
+                    irodori_opts["seed"] = int(seed)
+                if options and isinstance(options, dict):
+                    for k, v in options.items():
+                        if v is not None:
+                            irodori_opts[k] = v
+
+                ir = ActingIR(
+                    speaker=voice_id or "preview_speaker",
+                    text=text,
+                    text_reading=text_reading,
+                    voice=voice_id if voice_id and voice_id != "none" else "none",
+                    pace=pace * (profile.base_pace if profile else 1.0),
+                    style="dialogue",
+                    emotion="neutral",
+                    backend_options={
+                        "irodori": irodori_opts
+                    }
+                )
+                irodori_opts["response_format"] = "wav"
+                out_file = preview_dir / f"preview_{voice_id or 'test'}.wav"
+                backend.synthesize(ir, out_file)
+                return {"ok": True, "path": str(out_file.resolve()), "voice_id": voice_id}
+            else:
+                tts = get_provider(provider)
+                perf = Performance(
+                    voice=voice_id,
+                    mode="dialogue",
+                    emotion="neutral",
+                    intensity=0.3,
+                    pace=pace * profile.base_pace,
+                    pitch=pitch + profile.base_pitch,
+                    style=style or profile.sbv2_style,
+                    volume=1.0,
+                )
+                ext = getattr(tts, "ext", ".mp3")
+                out_file = preview_dir / f"preview_{voice_id}{ext}"
+                tts.synthesize(text, perf, out_file)
+                return {"ok": True, "path": str(out_file.resolve()), "voice_id": voice_id}
         finally:
             mem.close()
 

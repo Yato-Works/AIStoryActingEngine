@@ -52,3 +52,16 @@ workers/python/engine/aiae_selftest.txt
 workers/python/engine/selftest_err.log
 workers/python/engine/worker_dbg.err
 desktop/*.txt
+
+# Environment & Local Secrets
+.env
+*.env
+!.env.example
+
+# Logs & Temporary files
+*.log
+workers/python/tmp/
+workers/python/*.log
+.vscode/
+
+aiae_selftest.txt

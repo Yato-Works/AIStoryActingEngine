@@ -12,6 +12,8 @@
 #include <QSettings>
 #include <QCoreApplication>
 
+#include <QQuickStyle>
+
 #include "WorkerBridge.h"
 
 namespace {
@@ -71,6 +73,7 @@ void registerAiaeProtocol()
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
+    QQuickStyle::setStyle(QStringLiteral("Basic"));
     QCoreApplication::setApplicationName(QStringLiteral("AIStoryActingEngine Desktop"));
     QCoreApplication::setOrganizationName(QStringLiteral("aiae"));
     QCoreApplication::setApplicationVersion(QStringLiteral("0.1.0"));

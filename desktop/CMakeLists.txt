@@ -33,6 +33,7 @@ qt6_add_qml_module(aiae_desktop
         src/PlayerPage.qml
         src/CastingPage.qml
         src/VoiceStudioPage.qml
+        src/SettingsPage.qml
         src/StudioPage.qml
         src/NowPlayingBar.qml
 )
@@ -45,6 +46,6 @@ target_link_libraries(aiae_desktop PRIVATE
     Qt6::Multimedia
 )
 
-if(WIN32)
-    set_target_properties(aiae_desktop PROPERTIES WIN32_EXECUTABLE TRUE)
-endif()
+# if(WIN32)
+#     set_target_properties(aiae_desktop PROPERTIES WIN32_EXECUTABLE TRUE)
+# endif()

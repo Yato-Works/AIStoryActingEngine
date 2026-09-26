@@ -16,8 +16,9 @@ import re
 def openjtalk_available() -> bool:
     try:
         import pyopenjtalk  # noqa: F401
+        pyopenjtalk.g2p("テスト", kana=True)
         return True
-    except ImportError:
+    except Exception:
         return False
 
 

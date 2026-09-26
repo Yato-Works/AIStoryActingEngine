@@ -61,11 +61,21 @@ ApplicationWindow {
     // ---- bridge wiring ----
     Connections {
         target: bridge
-        function onRunningChanged(r) { root.workerRunning = r }
+        function onRunningChanged(r) {
+            root.workerRunning = r
+            if (r) {
+                root.statusText = "接続完了 — 書籍一覧を取得中…"
+                bridge.listBooks()
+                bridge.listVoiceProfiles()
+            }
+        }
         function onBooksLoaded(books) {
             booksModel.clear()
             for (var i = 0; i < books.length; ++i) booksModel.append(books[i])
             root.statusText = books.length + " 冊の本"
+            if (books.length > 0 && !root.currentBook) {
+                root.currentBook = books[0]
+            }
         }
         function onBookLoaded(book) {
             if (book && book.ok !== false) root.playBook(book)
@@ -96,9 +106,18 @@ ApplicationWindow {
             if (root.currentBook) bridge.getCastings(root.currentBook.id)
         }
         function onVoicePreviewReady(path) {
-            root.statusText = "▶ プレビュー再生中…"
-            previewPlayer.source = root.toFileUrl(path)
+            console.log("[preview] voicePreviewReady received:", path)
+            root.statusText = "▶ プレビュー音声を再生中…"
+            var url = root.toFileUrl(path)
+            console.log("[preview] loading url:", url)
+            previewPlayer.source = url
             previewPlayer.play()
+        }
+        function onCharacterVoiceImagined(voiceDesign) {
+            root.statusText = "✨ キャラクターから声を想像しました: " + (voiceDesign.concept_summary || "")
+            if (castingPage && castingPage.applyImaginedVoice) {
+                castingPage.applyImaginedVoice(voiceDesign)
+            }
         }
         function onDocumentImported(novelPath, title) {
             root.statusText = "✓ ドキュメント取り込み完了: " + title + " — 解析ジョブを開始します"
@@ -116,67 +135,215 @@ ApplicationWindow {
 
         // ===== sidebar =====
         Rectangle {
-            width: 230; height: parent.height; color: "#181818"
+            width: 240; height: parent.height
+            color: "#111117"
+            border.color: "#1c1c28"
+            border.width: 1
+
             ColumnLayout {
-                anchors.fill: parent; anchors.margins: 14; spacing: 4
-                Text {
-                    text: "🎧 AIAE"; color: "#eeeeee"
-                    font.pixelSize: 22; font.bold: true
-                    Layout.leftMargin: 8; Layout.bottomMargin: 14
+                anchors.fill: parent; anchors.margins: 16; spacing: 6
+
+                // ブランドヘッダー
+                ColumnLayout {
+                    spacing: 2
+                    Layout.leftMargin: 6; Layout.bottomMargin: 18; Layout.topMargin: 8
+                    RowLayout {
+                        spacing: 8
+                        Rectangle {
+                            width: 32; height: 32; radius: 8
+                            color: "#192d20"
+                            border.color: "#2a5436"
+                            border.width: 1
+                            Text { anchors.centerIn: parent; text: "🎧"; font.pixelSize: 18 }
+                        }
+                        Text {
+                            text: "AISAE"
+                            color: "#ffffff"
+                            font.pixelSize: 20
+                            font.bold: true
+                            font.family: "Segoe UI, Yu Gothic UI, sans-serif"
+                        }
+                    }
+                    Text {
+                        text: "AI Story Acting Engine"
+                        color: "#8a8a9e"
+                        font.pixelSize: 10
+                        font.bold: true
+                        Layout.leftMargin: 2
+                    }
                 }
+
+                // ナビゲーション一覧
                 Repeater {
                     model: [
-                        { key: "library", label: "📚 本棚" },
-                        { key: "player", label: "▶ プレイヤー" },
-                        { key: "casting", label: "🎭 キャスティング" },
-                        { key: "voiceStudio", label: "🎙 ボイス作成" },
-                        { key: "studio", label: "📊 ログ・進捗" }
+                        { key: "library", label: "My Bookshelf", icon: "📗" },
+                        { key: "player", label: "Player", icon: "▷" },
+                        { key: "casting", label: "Casting Studio", icon: "📹" },
+                        { key: "voiceStudio", label: "Voice Lab", icon: "🎙" },
+                        { key: "settings", label: "Settings", icon: "⚙" }
                     ]
-                    delegate: Button {
+                    delegate: Rectangle {
+                        id: navItem
                         required property var modelData
-                        text: modelData.label
                         Layout.fillWidth: true
-                        flat: true
-                        highlighted: root.currentPage === modelData.key
-                        onClicked: {
-                            root.currentPage = modelData.key
-                            if (modelData.key === "studio") bridge.listEvents(80)
-                            if (modelData.key === "casting" && root.currentBook) bridge.getCastings(root.currentBook.id)
-                            if (modelData.key === "voiceStudio") bridge.listVoiceProfiles()
+                        height: 44
+                        radius: 12
+                        color: navMa.containsMouse ? "#1c1f2e" : "transparent"
+
+                        // アクティブ時はエメラルドグリーンの発光グラデーション
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: 12
+                            visible: root.currentPage === modelData.key
+                            gradient: Gradient {
+                                orientation: Gradient.Horizontal
+                                GradientStop { position: 0.0; color: "#10b981" }
+                                GradientStop { position: 1.0; color: "#059669" }
+                            }
+                        }
+
+                        Behavior on color { ColorAnimation { duration: 120 } }
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 14
+                            anchors.rightMargin: 14
+                            spacing: 12
+
+                            Text {
+                                text: modelData.icon
+                                font.pixelSize: 14
+                                opacity: root.currentPage === modelData.key ? 1.0 : 0.7
+                            }
+                            Text {
+                                text: modelData.label
+                                color: root.currentPage === modelData.key ? "#ffffff" : "#9499b0"
+                                font.pixelSize: 13
+                                font.bold: true
+                                Layout.fillWidth: true
+                            }
+                        }
+
+                        MouseArea {
+                            id: navMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                root.currentPage = modelData.key
+                                if (modelData.key === "casting" && root.currentBook) bridge.getCastings(root.currentBook.id)
+                                if (modelData.key === "voiceStudio") bridge.listVoiceProfiles()
+                            }
                         }
                     }
                 }
-                Item { Layout.fillHeight: true }
-                RowLayout {
-                    spacing: 6; Layout.leftMargin: 8
-                    Rectangle {
-                        Layout.preferredWidth: 9; Layout.preferredHeight: 9; radius: 4
-                        color: root.workerRunning ? root.cAccent : "#e05555"
-                    }
-                    Text {
-                        text: root.workerRunning ? "Worker 接続中" : "Worker 停止中"
-                        color: "#a0a0a0"; font.pixelSize: 12
+
+                Item { Layout.preferredHeight: 14 }
+
+                // セカンダリナビゲーション (Projects, Community, Library)
+                Repeater {
+                    model: [
+                        { label: "Projects", icon: "📁" },
+                        { label: "Community", icon: "👥" },
+                        { label: "Studio Logs", icon: "📊" }
+                    ]
+                    delegate: Rectangle {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        height: 38
+                        radius: 8
+                        color: subNavMa.containsMouse ? "#181a24" : "transparent"
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 14
+                            anchors.rightMargin: 14
+                            spacing: 12
+                            Text { text: modelData.icon; font.pixelSize: 13; opacity: 0.6 }
+                            Text { text: modelData.label; color: "#747890"; font.pixelSize: 12; font.bold: true; Layout.fillWidth: true }
+                        }
+                        MouseArea {
+                            id: subNavMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                if (modelData.label === "Studio Logs") {
+                                    root.currentPage = "studio"
+                                    bridge.listEvents(80)
+                                }
+                            }
+                        }
                     }
                 }
-                Text {
-                    text: root.statusText; color: "#777777"; font.pixelSize: 11
-                    wrapMode: Text.WordWrap; Layout.fillWidth: true; Layout.leftMargin: 8
+
+                Item { Layout.fillHeight: true }
+
+                // ステータスバナー（下部）
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: colStatus.implicitHeight + 20
+                    radius: 10
+                    color: "#161622"
+                    border.color: "#222232"
+                    border.width: 1
+
+                    ColumnLayout {
+                        id: colStatus
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        spacing: 6
+
+                        RowLayout {
+                            spacing: 8
+                            Rectangle {
+                                width: 8; height: 8; radius: 4
+                                color: root.workerRunning ? root.cAccent : "#e05555"
+                                SequentialAnimation on opacity {
+                                    loops: Animation.Infinite
+                                    running: root.workerRunning
+                                    NumberAnimation { to: 0.3; duration: 800 }
+                                    NumberAnimation { to: 1.0; duration: 800 }
+                                }
+                            }
+                            Text {
+                                text: root.workerRunning ? "Engine Online" : "Engine Offline"
+                                color: root.workerRunning ? root.cAccent : "#e05555"
+                                font.pixelSize: 11
+                                font.bold: true
+                            }
+                        }
+
+                        Text {
+                            text: root.statusText
+                            color: "#808092"
+                            font.pixelSize: 11
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
+                    }
                 }
             }
         }
 
-        // ===== main column =====
-        ColumnLayout {
-            width: parent.width - 230; height: parent.height; spacing: 0
+        // ===== main area =====
+        Item {
+            width: parent.width - 240; height: parent.height
+
             StackLayout {
-                Layout.fillWidth: true; Layout.fillHeight: true
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: nowPlayingBar.top
                 currentIndex: root.currentPage === "library" ? 0
                             : root.currentPage === "player" ? 1
                             : root.currentPage === "casting" ? 2
-                            : root.currentPage === "voiceStudio" ? 3 : 4
+                            : root.currentPage === "voiceStudio" ? 3
+                            : root.currentPage === "settings" ? 4 : 5
                 BookshelfPage {
                     books: booksModel
                     accent: root.cAccent
+                    activeBookId: root.currentBook ? root.currentBook.id : ""
                     onOpenBook: (bid) => root.openBook(bid)
                     onImportRequested: importDialog.open()
                 }
@@ -188,16 +355,32 @@ ApplicationWindow {
                     onSeekRequested: (sec) => root.seekTo(sec)
                 }
                 CastingPage {
+                    id: castingPage
                     book: root.currentBook
                     seriesId: root.currentSeriesId
                     castings: castingsModel
                     voiceProfiles: voiceProfilesModel
                     accent: root.cAccent
+                    atlasConnected: bridge.atlasConnected
+                    isPlayingPreview: previewPlayer.playbackState === MediaPlayer.PlayingState
                     onAssignRequested: (bid, cid, vext, vint, locked) => {
                         bridge.assignCasting(bid, cid, vext, vint, locked, "")
                     }
-                    onPreviewRequested: (txt, vid) => {
-                        bridge.previewVoice(txt, vid, "Neutral", 0.0, 1.0, "edge")
+                    onPreviewRequested: (txt, vid, cap, pac, gemini, options) => {
+                        bridge.previewVoiceIrodori(txt, vid, cap, pac, gemini, options || {})
+                    }
+                    onImagineRequested: (bid, cid) => {
+                        root.statusText = "🧠 キャラクターから声を想像中…"
+                        bridge.imagineCharacterVoice(bid, cid)
+                    }
+                    onApplyAllRequested: (bid, prov) => {
+                        bridge.applyCastingsAndRegen(bid, prov)
+                        root.statusText = "✨ 小説全体への配役適用ジョブを開始しました"
+                        root.currentPage = "studio"
+                        bridge.listEvents(80)
+                    }
+                    onToggleAtlasRequested: (conn) => {
+                        bridge.atlasConnected = conn
                     }
                     onRefreshRequested: (bid) => bridge.getCastings(bid)
                 }
@@ -211,18 +394,27 @@ ApplicationWindow {
                         bridge.previewVoice(txt, vid, sty, pit, pac, prov)
                     }
                 }
+                SettingsPage {
+                    accent: root.cAccent
+                }
                 StudioPage {
                     book: root.currentBook
                     events: eventsModel
                 }
             }
+
+            // ドッキングされた NowPlayingBar (下部に固定されコンテンツと絶対に被らない)
             NowPlayingBar {
-                Layout.fillWidth: true
+                id: nowPlayingBar
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
                 player: player
                 book: root.currentBook
                 accent: root.cAccent
                 onOpenPlayer: root.currentPage = "player"
                 onOpenStudio: { root.currentPage = "studio"; bridge.listEvents(80) }
+                onOpenSettings: root.currentPage = "settings"
             }
         }
     }
@@ -234,35 +426,53 @@ ApplicationWindow {
         modal: true
         standardButtons: Dialog.Ok | Dialog.Cancel
         anchors.centerIn: parent
-        width: 480
-        background: Rectangle { radius: 12; color: "#222222"; border.color: "#333333" }
+        width: 500
+        background: Rectangle {
+            radius: 16
+            color: "#161622"
+            border.color: "#28283a"
+            border.width: 1
+        }
 
         contentItem: ColumnLayout {
-            spacing: 14
+            spacing: 16
             Text {
-                text: "持っている本のファイルパス（PDF / 画像 / TXT）を指定してください:"
-                color: "#cccccc"; font.pixelSize: 13
+                text: "小説ファイル（PDF、テキストファイル、または画像）を指定してください:"
+                color: "#b0b0c2"; font.pixelSize: 13
+                wrapMode: Text.WordWrap; Layout.fillWidth: true
             }
             ColumnLayout {
-                spacing: 4; Layout.fillWidth: true
-                Text { text: "本のタイトル"; color: "#888888"; font.pixelSize: 11 }
+                spacing: 6; Layout.fillWidth: true
+                Text { text: "本のタイトル"; color: "#8a8a9e"; font.pixelSize: 11; font.bold: true }
                 TextField {
                     id: importTitleInput
                     Layout.fillWidth: true
-                    placeholderText: "無職転生 第1巻"
-                    color: "#eeeeee"
-                    background: Rectangle { radius: 6; color: "#2d2d2d" }
+                    height: 38
+                    placeholderText: "星詠みのアルカディア 第1巻"
+                    color: "#ffffff"
+                    background: Rectangle {
+                        radius: 8
+                        color: "#20202e"
+                        border.color: "#303045"
+                        border.width: 1
+                    }
                 }
             }
             ColumnLayout {
-                spacing: 4; Layout.fillWidth: true
-                Text { text: "ファイルパス (またはカンマ区切りの画像パス)"; color: "#888888"; font.pixelSize: 11 }
+                spacing: 6; Layout.fillWidth: true
+                Text { text: "ファイルパス (またはカンマ区切りの画像パス)"; color: "#8a8a9e"; font.pixelSize: 11; font.bold: true }
                 TextField {
                     id: importPathInput
                     Layout.fillWidth: true
+                    height: 38
                     placeholderText: "C:/path/to/novel.txt または .pdf"
-                    color: "#eeeeee"
-                    background: Rectangle { radius: 6; color: "#2d2d2d" }
+                    color: "#ffffff"
+                    background: Rectangle {
+                        radius: 8
+                        color: "#20202e"
+                        border.color: "#303045"
+                        border.width: 1
+                    }
                 }
             }
         }

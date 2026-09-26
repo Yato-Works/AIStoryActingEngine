@@ -28,5 +28,5 @@ $cc  = Join-Path $mingwBin "gcc.exe"
     "-DCMAKE_CXX_COMPILER=$Compiler"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-cmake --build $build
+cmake --build $build -j 2
 exit $LASTEXITCODE

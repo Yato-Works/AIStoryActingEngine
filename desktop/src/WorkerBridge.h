@@ -24,6 +24,7 @@ class WorkerBridge : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(bool running READ isRunning NOTIFY runningChanged)
+    Q_PROPERTY(bool atlasConnected READ isAtlasConnected WRITE setAtlasConnected NOTIFY atlasConnectionStatusChanged)
 
 public:
     explicit WorkerBridge(const QString &pythonExe,
@@ -32,6 +33,13 @@ public:
                           QObject *parent = nullptr);
 
     bool isRunning() const { return m_proc.state() != QProcess::NotRunning; }
+    bool isAtlasConnected() const { return m_atlasConnected; }
+    void setAtlasConnected(bool connected) {
+        if (m_atlasConnected != connected) {
+            m_atlasConnected = connected;
+            emit atlasConnectionStatusChanged(connected);
+        }
+    }
 
     /// worker.py を子プロセスで起動する（起動成功で runningChanged が発火）
     Q_INVOKABLE void start();
@@ -57,10 +65,16 @@ public:
     Q_INVOKABLE void assignCasting(const QString &bookId, const QString &characterId,
                                    const QString &voiceId, const QString &voiceInternalId = QString(),
                                    bool isLocked = true, const QString &notes = QString());
+    Q_INVOKABLE void applyCastingsAndRegen(const QString &bookId, const QString &provider = QStringLiteral("irodori"));
     Q_INVOKABLE void previewVoice(const QString &text, const QString &voiceId,
                                   const QString &style = QStringLiteral("Neutral"),
                                   double pitch = 0.0, double pace = 1.0,
                                   const QString &provider = QStringLiteral("edge"));
+    Q_INVOKABLE void previewVoiceIrodori(const QString &text, const QString &voiceId,
+                                         const QString &caption, double pace = 1.0,
+                                         bool useGemini = true,
+                                         const QVariantMap &options = QVariantMap());
+    Q_INVOKABLE void imagineCharacterVoice(const QString &bookId, const QString &characterId);
     Q_INVOKABLE void listSeries();
     Q_INVOKABLE void upsertSeries(const QVariantMap &series);
     Q_INVOKABLE void assignBookToSeries(const QString &bookId, const QString &seriesId);
@@ -93,6 +107,7 @@ signals:
     void voiceProfileDeleted(QString voiceId);
     void castingsLoaded(QVariantList castings, QString seriesId);
     void castingAssigned(QString characterId, QString voiceId);
+    void characterVoiceImagined(QVariantMap voiceDesign);
     void voicePreviewReady(QString path);
     void seriesLoaded(QVariantList series);
     void seriesSaved(QString seriesId);

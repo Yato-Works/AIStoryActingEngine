@@ -49,12 +49,12 @@ def test_worker_import_document_rpc(tmp_path):
 
     worker = EngineWorker(db_file)
     txt_file = tmp_path / "chapter1.txt"
-    txt_file.write_text("無職転生 第1話\n前世の男が語り始める。", encoding="utf-8")
+    txt_file.write_text("星詠みの旅人 第1話\n静かな夜空を見上げ、語り手が静かに口を開いた。", encoding="utf-8")
 
     res = worker.dispatch("import_document", {
         "sources": [str(txt_file)],
-        "title": "無職転生_第1話",
+        "title": "星詠みの旅人_第1話",
     })
     assert res["ok"] is True
-    assert res["title"] == "無職転生_第1話"
+    assert res["title"] == "星詠みの旅人_第1話"
     assert Path(res["novel_path"]).exists()

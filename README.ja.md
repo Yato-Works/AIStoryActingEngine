@@ -2,20 +2,20 @@
 
 <div align="center">
 
-**🌐 [日本語 README はこちら (README.ja.md)](README.ja.md)**
+**🌐 [English README (README.md)](README.md)**
 
 <br/>
 
-> **⚠️ This project is currently in Early Preview / Demo stage.**  
-> The desktop UI and Python engine are functional, but many features are still under active development.  
-> Contributions, feedback, and ideas are very welcome!
+> **⚠️ 本プロジェクトは現在 Early Preview / デモ段階 です。**  
+> デスクトップUI・Pythonエンジンは実際に動作しますが、多くの機能がまだ開発中です。  
+> フィードバック・コントリビューション・アイデア、大歓迎です！
 
 <br/>
 
-**Beyond Text-to-Speech: Bringing Local AI-Powered Audio Drama & Audiobooks to Everyone.**  
+**Text-to-Speechを超えて：ローカルAIパワードのオーディオドラマ&オーディオブックを、すべての人に。**  
 *小説を単に読み上げるのではなく、感情・関係性・心の声を「演じ分ける」、ローカル完結型AIオーディオブック・スタジオ*
 
-[![Status](https://img.shields.io/badge/Status-Early%20Preview%20%2F%20Demo-orange.svg)](#-current-status)
+[![Status](https://img.shields.io/badge/Status-Early%20Preview%20%2F%20Demo-orange.svg)](#-現在のステータス)
 [![Desktop App](https://img.shields.io/badge/Desktop-Qt6%20%2F%20C%2B%2B20-1db954.svg)](desktop/)
 [![Python Engine](https://img.shields.io/badge/Engine-Python%203.11+-3776ab.svg)](workers/python/)
 [![Local LLM](https://img.shields.io/badge/LLM-Local%20First%20(Ollama%20%2F%20Gemini)-blueviolet.svg)](https://ollama.com/)
@@ -24,8 +24,8 @@
 
 <br/>
 
-<!-- Screenshot placeholder: replace with real screenshot after build -->
-<img src="docs/images/aisae_real_preview.png" alt="AISAE Real Desktop App Interface" width="850" style="border-radius: 14px; box-shadow: 0 16px 36px rgba(0,0,0,0.6);" />
+<!-- スクリーンショット: 実機のビルド後に差し替え -->
+<img src="docs/images/aisae_real_preview.png" alt="AISAE 実際のデスクトップアプリUI" width="850" style="border-radius: 14px; box-shadow: 0 16px 36px rgba(0,0,0,0.6);" />
 
 <br/><br/>
 
@@ -33,7 +33,7 @@
 
 ---
 
-## 🌟 プロジェクトのビジョン (Vision)
+## 🌟 プロジェクトのビジョン
 
 現代のオーディオブックは制作コストが非常に高く、世の中のほとんどの小説・同人誌・自作短編は「声」を与えられないまま埋もれています。また、一般的なAI読み上げ（TTS）は平坦で無感情なロボット声になりがちで、「物語の世界に没入する」体験には届いていませんでした。
 
@@ -45,20 +45,13 @@
 
 ---
 
-## 📸 スクリーンショット & インターフェース (Real App Interface)
-
-### 🎙️ Voice Lab & 演技チューニング
-独自のキャラクターボイスプロファイルを作成・チューニング・永続保存。ピッチ・話速・声の芯（Energy）を自在に調整し、リアルタイムに試聴できます。下部にはSpotifyスタイルのシークバーと、音声出力時のみ動くcava風ライブ音波インジケーターを搭載。
-
----
-
-## ✨ コア機能 (Key Features)
+## ✨ コア機能
 
 ### 1. 📚 スマート本棚 & ドキュメントインポーター
 - テキストファイル（`.txt`）やPDF・画像から小説を取り込み、自動で章（チャプター）・登場人物・場面構造を解析。
 - 再生進捗・音声生成ステータスを一目で管理。
 
-### 2. 🧠 Character Intelligence (登場人物の記憶と関係性)
+### 2. 🧠 Character Intelligence（登場人物の記憶と関係性）
 - 単なる声の割り当てではなく、**「誰が」「誰に対して」「どんな感情で」**話しているかを追跡。
 - **External / Internal デュアルボイス**: 「口に出したセリフ」と「心の中のモノローグ（本音）」で声のトーンやピッチを自動で演じ分けます。
 - **感情の余韻 (Emotional Carryover)**: 怒りや悲しみのシーンの後、直ちに平坦に戻るのではなく、感情の残り香が次の発話へと自然に減衰しながら滲み出ます。
@@ -67,7 +60,7 @@
 - 「ため息」「照れ」「ツッコミ」「威厳」「囁き」などの感情ニュアンスを、台本上の演技絵文字を通じてTTSモデルに精密注入。
 - ピッチ（Pitch）、発話速度（Pace）、声の芯（Energy）を自在にチューニングし、独自のカスタムボイスを永続保存可能。
 
-### 4. ⚖️ Performance Judge (音質ではなく「演技」の審査)
+### 4. ⚖️ Performance Judge（音質ではなく「演技」の審査）
 - 合成された音声が「文脈として合っているか」を判定。親友が倒れた悲痛な場面で明るい声になっていないか等を自律検証し、不適切な場合は自動で再演技（Re-perform）を実行。
 
 ### 5. 🎧 M4B オーディオブック書き出し
@@ -117,7 +110,7 @@ flowchart TD
 
 ---
 
-## 🚀 クイックスタート (Getting Started)
+## 🚀 クイックスタート
 
 ### 前提条件
 - **OS**: Windows 11 / 10 (64-bit)
@@ -140,7 +133,7 @@ python -m venv .venv
 pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-### 3. テストの実行 (全280+テスト検証)
+### 3. テストの実行（全280+テスト検証）
 ```bash
 # プロジェクトルートにて
 pytest
@@ -159,7 +152,25 @@ PowerShellからワンステップでビルドおよび起動が可能です：
 
 ---
 
-## 🎨 声質アーキタイプ一覧 (Preset Voice Archetypes)
+## ⚙️ 環境変数設定
+
+`.env.example` を `.env` にコピーして各項目を設定してください：
+
+```bash
+cp .env.example .env
+```
+
+| 変数名 | 説明 | 例 |
+|---|---|---|
+| `GEMINI_API_KEY` | Google Gemini API キー（脚本解析AIに使用） | `AIzaSy...` |
+| `GEMINI_MODEL` | Gemini モデル名 | `gemini-2.5-flash` |
+| `IRODORI_HOST` | Irodori-TTS サーバーURL | `http://127.0.0.1:8088` |
+
+> **💡 ヒント**: Gemini API キーはデスクトップアプリの **Settings > 脚本・演技指示 AI** セクションからも入力可能です（Google Gemini API を選択時）。
+
+---
+
+## 🎨 声質アーキタイプ一覧
 
 本プロジェクトでは、商標権・パブリシティ権・肖像権および声の利用規約に配慮し、実在の声優名やアニメキャラクター名は一切使用しておりません。  
 代わりに、音響特性と役柄に基づいた汎用アーキタイプを提供しています：
@@ -180,50 +191,32 @@ PowerShellからワンステップでビルドおよび起動が可能です：
 
 ---
 
-## 📋 Current Status
+## 📋 現在のステータス
 
-> **This project is in Early Preview / Demo stage.** The architecture, engine core, and desktop UI are real and functional — not mockups. However, many planned features are still under development.
+> **本プロジェクトは Early Preview / デモ段階です。** アーキテクチャ・エンジンコア・デスクトップUIは実際に動作する実装であり、モックアップではありません。ただし、多くの予定機能がまだ開発中です。
 
-### ✅ What works today
-- Qt6/C++20 desktop app with dark-themed UI (Bookshelf, Player, Casting Studio, Voice Lab, Settings, Studio Logs)
-- Python engine with stdio JSON-RPC IPC — story analysis, character extraction, chapter parsing
-- Voice profile creation, pitch/pace/energy tuning, and preview playback
-- Casting system with character-to-voice assignment & persistence (SQLite SSOT)
-- Emotion emoji-driven acting parameter injection
-- Performance Judge (automated re-performance for bad emotional context)
-- M4B audiobook export with chapter markers
-- Settings page for binding local TTS (VOICEVOX, Edge-TTS, Custom OpenAI-compatible) and LLM (Ollama, Gemini)
-- 281+ automated tests
+### ✅ 現時点で動作するもの
+- Qt6/C++20 デスクトップアプリ（ダークテーマUI: 本棚, プレイヤー, キャスティング, ボイスラボ, 設定, スタジオログ）
+- stdio JSON-RPC IPC による Python エンジン連携（物語解析・キャラクター抽出・チャプター分割）
+- ボイスプロファイル作成、ピッチ/速度/エネルギーチューニング、プレビュー再生
+- キャスティングシステム（キャラクターへの声割り当て & SQLite永続化）
+- 感情絵文字駆動の演技パラメータ注入
+- Performance Judge（不適切な感情コンテキストの自動再演技）
+- M4B オーディオブック書き出し（チャプターマーカー付き）
+- Settings画面からのローカルTTS / LLMバインディング
+- 281件以上の自動テスト
 
-### 🚧 What's still in progress
-- Advanced VRAM management & batch TTS inference optimization
-- OCR-based paper book / image scan import
-- Mobile player (Flutter)
-- Community voice preset sharing
-- Polished ComboBox dark-theme styling (Qt native widgets)
-- Persistent settings save to disk (currently in-memory only in the demo)
-
----
-
-## ⚙️ 環境変数設定 (Environment Configuration)
-
-`.env.example` を `.env` にコピーして各項目を設定してください：
-
-```bash
-cp .env.example .env
-```
-
-| 変数名 | 説明 | 例 |
-|---|---|---|
-| `GEMINI_API_KEY` | Google Gemini API キー（脚本解析AIに使用） | `AIzaSy...` |
-| `GEMINI_MODEL` | Gemini モデル名 | `gemini-2.5-flash` |
-| `IRODORI_HOST` | Irodori-TTS サーバーURL | `http://127.0.0.1:8088` |
-
-> **💡 Tip**: Gemini API キーはデスクトップアプリの **Settings > 脚本・演技指示 AI** セクションからも入力可能です（Google Gemini API を選択時）。
+### 🚧 開発中の機能
+- 高度なVRAM管理 & バッチTTS推論最適化
+- OCR連携による紙書籍・画像スキャンからの直接取り込み
+- モバイルプレイヤー（Flutter）
+- コミュニティ機能（ボイスプリセット・辞書の共有）
+- ComboBoxのダークテーマスタイリング改善
+- 設定のディスク永続化（現在のデモではメモリ上のみ）
 
 ---
 
-## 🗺️ ロードマップ (Roadmap)
+## 🗺️ ロードマップ
 
 - [x] **Phase 0**: PoC（Python単体でのキャラクター解析と音声合成）
 - [x] **Phase 1**: SQLiteによる物語状態・記憶（Memory Engine）の永続化

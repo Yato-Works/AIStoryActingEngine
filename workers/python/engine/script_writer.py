@@ -247,6 +247,180 @@ def _post_with_retry(url: str, payload: dict, timeout: float,
 
 
 # ============================================================================
+# Gemini 実装（高知能・高速・演技絵文字パレット完全対応）
+# ============================================================================
+
+GEMINI_EMOJI_PALETTE_GUIDE = """
+## Easy-Irodori-TTS 演技・感情絵文字パレット（文脈に合わせて自然に配置）
+- 感情（ポジティブ）:
+  - 🤭 : 含み笑い、くすくす笑い、吹き出し（セリフ中や語尾に）
+  - 😊 : 楽しげ、嬉しそうに
+  - 😆 : 喜び、大喜び、笑い
+  - 🫶 : 優しく、愛情を込めて
+  - 😌 : 安堵、ホッとした息、満足げ
+  - 😎 : 得意げ、ドヤ顔
+  - 💪 : 力強く、気合を入れて
+- 感情（ネガティブ）:
+  - 😭 : 泣き声、号泣、嗚咽
+  - 😠 : 怒り、不満、拗ねる
+  - 😟 : 心配、不安
+  - 😰 : 慌てる、動揺、狼狽
+  - 🥺 : 震え声、自信なさげ、潤んだ瞳
+  - 😖 : 苦しげ、痛みに耐える
+  - 😱 : 悲鳴、絶叫
+  - 🙄 : 呆れ、ため息混じり
+  - 😒 : 舌打ち、不機嫌
+- その他の感情:
+  - 😲 : 驚き、感嘆
+  - 🤔 : 疑問、考え込む
+  - 🫣 : 照れ、恥ずかしそうに
+  - 😏 : からかう、ニヤリ、甘えるように
+  - 🙏 : 懇願、お願い
+  - 😪 : 眠そう、気だるげ
+  - 🥴 : 酔っぱらい、ふらふら
+- 話し方・演出:
+  - 👂 : 囁き声、耳元の声、内緒話
+  - ⏩ : 早口、まくしたてる
+  - 🐢 : ゆっくり、噛みしめるように
+  - 💥 : 勢いよく、大声
+  - 📖 : 朗読調、ナレーション
+  - ⏸️ : 間、沈黙、息を止める
+  - 📢 : エコー、叫び
+  - 📞 : 通話越し
+  - 👌 : 相槌
+  - 😴 : 寝言、うとうと
+  - 🤐 : 口を塞がれる、もごもご
+- 息遣い・口音:
+  - 😮‍💨 : 吐息、ため息、深呼吸
+  - 🌬️ : 息切れ、荒い息遣い
+  - 😮 : 息をのむ、ハッとする
+  - 🥱 : あくび
+  - 🥵 : 喘ぎ、苦しい息、火照り
+  - 🤧 : くしゃみ、咳、鼻すすり
+  - 💋 : リップノイズ、口づけ
+  - 👅 : 舐める音、水音
+  - 🥤 : 唾を飲み込む
+  - 👃 : 匂いを嗅ぐ
+  - 🎵 : 鼻歌
+"""
+
+
+class GeminiScriptWriter:
+    """Gemini API で高知能な読み台本（平仮名化＋演技絵文字）を書く AI 台本家。"""
+
+    name = "gemini"
+
+    def __init__(self, model: str = "gemini-3.1-flash-lite",
+                 api_key: str | None = None,
+                 timeout: float = 60.0) -> None:
+        import os
+        self.model = os.environ.get("GEMINI_MODEL") or model
+        self.api_key = os.environ.get("GEMINI_API_KEY") if api_key is None else api_key
+        self.timeout = timeout
+
+    def _prompt(self, segments: list[dict], dictionary: ReadingDictionary,
+                character_glossary: dict[str, str] | None,
+                chunk_index: int) -> str:
+        known = json.dumps(dictionary.entries(), ensure_ascii=False,
+                           indent=2) if len(dictionary) else "（なし）"
+        glossary = json.dumps(character_glossary or {}, ensure_ascii=False,
+                              indent=2)
+        payload = json.dumps(
+            [{"id": s.get("id", ""), "speaker": s.get("speaker", ""),
+              "text": s.get("text", "")} for s in segments],
+            ensure_ascii=False, indent=2)
+        return f"""あなたは日本最高峰の音声ドラマ・アニメ演出家です。
+小説のセグメント群を、天才声優（Irodori-TTS Animeモデル）が最高の演技をするための読み台本に起こしてください。
+
+## 台本の必須規則
+1. 各セグメントの text を**すべて平仮名（ひらがな）を主体としたかな文章**に変換した text_reading を書く。
+   - 漢字・ローマ字は一切残さないでください（未変換の漢字が残ると演者が誤読します）。
+   - 数字は読みに変換してください（例: 100人 → ひゃくにん）。
+   - カタカナ語や長音記号（ー）・促音（っ）はそのまま使って構いません。
+2. 読み方は**文脈**から正確に判断してください（「貼付」＝「はりつけ」、「今日」＝「きょう」等）。
+3. **演技絵文字の積極的な挿入**:
+   キャラクターの心情、セリフの息遣い（ため息、息をのむ）、感情（照れ、笑い、泣き等）に合わせて、
+   下記の【演技・感情絵文字パレット】から最適な絵文字をセリフの前・中・後ろに自然に挿入してください。
+   （例: 「……😮‍💨ううん。わたしも、いま きたところ🤭」）
+   地の文（ナレーション）でも情景や感情が宿る箇所には効果的に絵文字を添えて構いません。
+4. 人名・固有名詞の読みが確定したら readings に {{"surface", "reading"}} で申告してください。
+5. すでに辞書に登録済みの表記は、辞書の読みを**絶対に**変更しないでください。
+6. text の意味・語順・ニュアンスを変えないでください（言い換え・省略・要約は禁止）。
+7. 感嘆符・疑問符・句読点は保持してください。
+
+{GEMINI_EMOJI_PALETTE_GUIDE}
+
+## 既存の読み辞書（絶対に守る）
+{known}
+
+## キャラクター名鑑（人名の読みや性格の判断に使う）
+{glossary}
+
+## 今回のセグメント（チャンク {chunk_index + 1}）
+{payload}
+"""
+
+    def write_script(
+        self,
+        segments: list[dict],
+        dictionary: ReadingDictionary,
+        character_glossary: dict[str, str] | None = None,
+        chunk_index: int = 0,
+    ) -> ScriptWriterResult:
+        if not self.api_key:
+            raise RuntimeError("GEMINI_API_KEY が設定されていません")
+
+        import httpx
+        prepared = _prepare_segments(segments, dictionary)
+        prompt = self._prompt(prepared, dictionary, character_glossary, chunk_index)
+
+        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+               f"{self.model}:generateContent?key={self.api_key}")
+        body = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.2,
+                "responseMimeType": "application/json",
+                "responseSchema": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "segments": {
+                            "type": "ARRAY",
+                            "items": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "id": {"type": "STRING"},
+                                    "text_reading": {"type": "STRING"},
+                                },
+                                "required": ["id", "text_reading"],
+                            },
+                        },
+                        "readings": {
+                            "type": "ARRAY",
+                            "items": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "surface": {"type": "STRING"},
+                                    "reading": {"type": "STRING"},
+                                },
+                                "required": ["surface", "reading"],
+                            },
+                        },
+                    },
+                    "required": ["segments"],
+                },
+            },
+        }
+
+        resp = httpx.post(url, json=body, timeout=self.timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        text_content = data["candidates"][0]["content"]["parts"][0]["text"]
+        raw = json.loads(text_content)
+        return _build_result(prepared, raw, dictionary, chunk_index)
+
+
+# ============================================================================
 # OpenJTalk Script Writer（決定論・オフライン・高精度）
 # ============================================================================
 

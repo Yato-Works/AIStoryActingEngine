@@ -10,11 +10,7 @@ NARRATOR = "narrator"
 
 # ボイスプール（External 用ビルトイン枠 + ナレーター固定）
 #
-# 注意: tags 中の「杉田智和風」「内山夕実風」「小原好美風」等の実在声優風ラベルは、
-# 開発者が声のイメージを掴むための内部メモです。本番のブック表示・外部出力・
-# レコメンド検索には含めず、UI にもそのまま出さないでください
-# （声クローンの作成・利用と誤認されるリスクを避けるため。公開時は
-#  「低音・渋い」「少年・元気」等の属性タグに寄せる方針）。
+# 注意: 声の属性・質感は「低音・渋い」「少年・元気」等の音響属性タグに統一しています。
 VOICE_POOL = [
     VoiceProfile(
         voice_id="voice_01", label="若い男性", gender="male", age="young",
@@ -44,21 +40,21 @@ VOICE_POOL = [
         voice_id="voice_05", label="少年ボイス", gender="male", age="child",
         base_pitch=0.18, base_pace=1.08, tts_voice="ja-JP-NanamiNeural",
         sbv2_model_name="jvnv-F1-jp", sbv2_style="Neutral",
-        source="builtin", tags=["少年", "ショタ", "子供", "内山夕実風", "主人公"],
+        source="builtin", tags=["少年", "子供", "勇気", "主人公"],
         description="勇敢さと幼さが同居する少年主人公向けボイス"),
     VoiceProfile(
         voice_id="voice_06", label="重厚・低音男性", gender="male", age="adult",
         base_pitch=-0.15, base_pace=0.88, base_energy=0.9,
         tts_voice="ja-JP-KeitaNeural",
         sbv2_model_name="jvnv-M1-jp", sbv2_style="Neutral",
-        source="builtin", tags=["低音", "重厚", "杉田智和風", "前世の男", "モノローグ"],
+        source="builtin", tags=["低音", "重厚", "渋い", "モノローグ"],
         description="深い響きと落ち着きを持つ低音ボイス（心の声や歴戦の男に最適）"),
     VoiceProfile(
         voice_id="voice_07", label="冷静・淡々少女", gender="female", age="young",
         base_pitch=0.04, base_pace=0.92,
         tts_voice="ja-JP-NanamiNeural",
         sbv2_model_name="jvnv-F1-jp", sbv2_style="Neutral",
-        source="builtin", tags=["少女", "クーデレ", "小原好美風", "魔術師", "淡々"],
+        source="builtin", tags=["少女", "クーデレ", "知的", "魔術師", "淡々"],
         description="感情を抑えた淡々とした知的な少女ボイス"),
 ]
 

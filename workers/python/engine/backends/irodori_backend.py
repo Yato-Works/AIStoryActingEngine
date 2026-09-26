@@ -212,10 +212,15 @@ class IrodoriBackend(TTSBackend):
         # --- リクエスト構築 ---
         # server_opts で IrodoriOptions を透過制御できる。
         # 特に chunking_enabled/chunk_min_chars はサーバー側のテキスト分割合成
-        # （既定 min_chars=80、「、」でも分割）の制御に使う。サーバーは分割
-        # チャンクを無音なしで連結するため、文節の継ぎ目が硬く聞こえる
-        # （「かくかく」症状）場合は chunking_enabled=False で無効化できる。
+        # （既定 min_chars=80、「、」でも分割）の制御に使う。
         server_opts: dict = dict(opts.get("server") or {})
+        for param_key in ("cfg_scale_caption", "sway_coeff", "num_steps", "seed",
+                          "cfg_scale_speaker", "cfg_scale_text", "t_schedule_mode"):
+            if param_key in opts and param_key not in server_opts:
+                val = opts[param_key]
+                if val is not None:
+                    server_opts[param_key] = val
+
         if "chunking_enabled" not in server_opts:
             env_chunk = os.environ.get("IRODORI_CHUNKING")
             if env_chunk is not None:

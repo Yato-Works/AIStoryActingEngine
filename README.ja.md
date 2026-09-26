@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**🌐 [English README (README.md)](README.md)**
+🌐 [English](README.md) | **日本語 (Japanese)**
 
 <br/>
 

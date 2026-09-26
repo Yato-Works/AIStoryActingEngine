@@ -2,18 +2,18 @@
 
 <div align="center">
 
-**🌐 [日本語 README はこちら (README.ja.md)](README.ja.md)**
+🌐 **English** | [日本語 (Japanese)](README.ja.md)
 
 <br/>
 
-> **⚠️ This project is currently in Early Preview / Demo stage.**  
-> The desktop UI and Python engine are functional, but many features are still under active development.  
-> Contributions, feedback, and ideas are very welcome!
+> **⚠️ This project is currently in the Early Preview / Demo stage.**  
+> The desktop UI and Python engine are fully functional, but APIs and features are actively evolving.  
+> Community contributions, feedback, and ideas are warmly welcome!
 
 <br/>
 
-**Beyond Text-to-Speech: Bringing Local AI-Powered Audio Drama & Audiobooks to Everyone.**  
-*小説を単に読み上げるのではなく、感情・関係性・心の声を「演じ分ける」、ローカル完結型AIオーディオブック・スタジオ*
+**Beyond Simple Text-to-Speech: Bringing Local AI-Powered Audio Drama & Audiobooks to Everyone.**  
+*An AI-driven audiobook studio that doesn't just read stories, but "acts" them — tracking character emotions, unspoken thoughts, and dramatic relationships completely offline on your PC.*
 
 [![Status](https://img.shields.io/badge/Status-Early%20Preview%20%2F%20Demo-orange.svg)](#-current-status)
 [![Desktop App](https://img.shields.io/badge/Desktop-Qt6%20%2F%20C%2B%2B20-1db954.svg)](desktop/)
@@ -24,7 +24,6 @@
 
 <br/>
 
-<!-- Screenshot placeholder: replace with real screenshot after build -->
 <img src="docs/images/aisae_real_preview.png" alt="AISAE Real Desktop App Interface" width="850" style="border-radius: 14px; box-shadow: 0 16px 36px rgba(0,0,0,0.6);" />
 
 <br/><br/>
@@ -33,23 +32,26 @@
 
 ---
 
-## 🌟 プロジェクトのビジョン (Vision)
+## 🌟 Project Vision
 
-現代のオーディオブックは制作コストが非常に高く、世の中のほとんどの小説・同人誌・自作短編は「声」を与えられないまま埋もれています。また、一般的なAI読み上げ（TTS）は平坦で無感情なロボット声になりがちで、「物語の世界に没入する」体験には届いていませんでした。
+Traditional audiobook production is prohibitively expensive, requiring dedicated recording studios, voice directors, sound engineers, and professional voice actors. As a result, countless web novels, indie books, doujin works, and short stories never get voiced.
 
-**AISAE (AI Story Acting Engine)** は、**「将来的に誰でも自宅のPC（ローカル環境完結）で、手持ちの小説や物語から映画レベルの本格的な音声ドラマ・オーディオブックを創り、楽しめる世界」** を目指して開発されている次世代オープンソースエンジンです。
+On the other hand, conventional text-to-speech (TTS) produces flat, emotionless robotic narrations that shatter immersion.
 
-- **100% リアルな実機実装**: AI生成された架空のモックアップ画像ではなく、実際に動作するQt6/C++20 & Pythonエンジンによる本物のインターフェース。
-- **権利関係に配慮した設計**: 実在声優や有名人のボイスクローンに依存せず、独自の音響アーキタイプ（`Test_Voice / Archetype Presets`）と演技パラメータによってキャラクターの魅力を引き出します。
-- **完全ローカル完結可能 & 自由なTTSプラグイン**: VOICEVOX、Ollama、OpenAI互換自作TTS、Kokoro、Edge-TTSなど、お好きなローカルTTS/LLMを自由に設定画面からバインド可能です。
+**AISAE (AI Story Acting Engine)** is an open-source engine built with a clear mission:  
+**"Empowering anyone to create cinema-grade audio dramas and full-length audiobooks directly on their personal PC, completely offline, powered by local AI."**
+
+- **100% Genuine Native Implementation**: No mockups or AI-hallucinated concept art. All screenshots are from the live Qt6/C++20 desktop application and Python acting engine.
+- **Ethical & IP Safe Design**: We strictly avoid unauthorized celebrity voice cloning. AISAE uses generic acoustic archetypes (`Test_Voice1〜8`) and expressive performance vectors to bring characters to life safely.
+- **Local-First & Pluggable Architecture**: Easily connect your favorite local TTS servers (VOICEVOX, Ollama, Edge-TTS, Kokoro, or custom OpenAI-compatible TTS) and local/cloud LLMs from the Settings panel.
 
 ---
 
-## 📸 スクリーンショット & インターフェース (Real App Interface)
+## 📸 Real App Interface & Screenshots
 
-実機で動作しているQt6/QMLデスクトップアプリの実際のスクリーンショットです（AIによる架空生成モックアップではありません）。
+Captured directly from the running Qt6/QML desktop application on Windows.
 
-| 📚 Bookshelf & Studio Player | 🎭 Casting Studio & Voice Tuner |
+| 📚 Bookshelf & Studio Player | 🎭 Casting Studio & Voice Director |
 | :---: | :---: |
 | <img src="docs/images/aisae_real_preview.png" alt="Bookshelf & Player" width="450" /> | <img src="docs/images/aisae_casting_preview.png" alt="Casting Studio" width="450" /> |
 
@@ -57,41 +59,42 @@
 | :---: |
 | <img src="docs/images/aisae_settings_preview.png" alt="Settings Page" width="600" /> |
 
-- **Bookshelf & Player**: 映画ライブラリのように美しい作品一覧、章ごとのシーク、Spotifyスタイルのメディアバー（音声出力時のみ動くcava風波形インジケーター付き）。
-- **Casting Studio**: 登場人物への声の割り当て、直感的な声質チューナー、Gemini APIによる「キャラクターから声を想像する」機能、安全なプリセットアーキタイプ（`Test_Voice1〜8`）。
-- **Settings**: VOICEVOX、Ollama、OpenAI互換TTS、Gemini APIキーの安全な入力枠（マスク表示）とローカルバインド設定。
+- **Bookshelf & Player**: Sleek dark-mode library, per-chapter seek navigation, and a Spotify-inspired NowPlayingBar featuring a live cava-style reactive waveform indicator that moves only during audio playback.
+- **Casting Studio**: Assign voices to detected characters, fine-tune voice acoustic parameters, leverage Gemini AI to "imagine" voice designs from character traits, and use pre-configured safe archetypes (`Test_Voice1〜8`).
+- **Settings**: Seamlessly bind VOICEVOX, Ollama, OpenAI-compatible custom TTS endpoints, and safely input Gemini API keys with password-masked input fields.
 
 ---
 
-## ✨ コア機能 (Key Features)
+## ✨ Core Features
 
-### 1. 📚 スマート本棚 & ドキュメントインポーター
-- テキストファイル（`.txt`）やPDF・画像から小説を取り込み、自動で章（チャプター）・登場人物・場面構造を解析。
-- 再生進捗・音声生成ステータスを一目で管理。
+### 1. 📚 Smart Bookshelf & Document Importer
+- Ingest raw novel manuscripts (`.txt`), PDFs, or images.
+- Automatically segments text into chapters, scenes, dialogue lines, and narrative exposition.
+- Track audio rendering progress and playback states at a glance.
 
-### 2. 🧠 Character Intelligence (登場人物の記憶と関係性)
-- 単なる声の割り当てではなく、**「誰が」「誰に対して」「どんな感情で」**話しているかを追跡。
-- **External / Internal デュアルボイス**: 「口に出したセリフ」と「心の中のモノローグ（本音）」で声のトーンやピッチを自動で演じ分けます。
-- **感情の余韻 (Emotional Carryover)**: 怒りや悲しみのシーンの後、直ちに平坦に戻るのではなく、感情の残り香が次の発話へと自然に減衰しながら滲み出ます。
+### 2. 🧠 Character Intelligence (Memory & Relationships)
+- Tracks not just *what* is said, but **who is speaking, to whom, and under what emotional context**.
+- **External vs. Internal Dual-Voice**: Distinctly renders spoken dialogue and internal monologues (unspoken thoughts) using modulated acoustic parameters.
+- **Emotional Carryover**: Emotions linger naturally across scene boundaries instead of abruptly resetting to neutral.
 
-### 3. 🎙️ 感情絵文字 (Acting Emojis) × 演技演出
-- 「ため息」「照れ」「ツッコミ」「威厳」「囁き」などの感情ニュアンスを、台本上の演技絵文字を通じてTTSモデルに精密注入。
-- ピッチ（Pitch）、発話速度（Pace）、声の芯（Energy）を自在にチューニングし、独自のカスタムボイスを永続保存可能。
+### 3. 🎙️ Acting Emojis & Dramatic Nuance Direction
+- Subtly guides neural TTS models using scripted acting emojis (`sigh`, `blush`, `whisper`, `tsukkomi`, `anger`, `majesty`).
+- Adjust pitch, pace, and vocal energy on the fly, with full persistence to local SQLite storage.
 
-### 4. ⚖️ Performance Judge (音質ではなく「演技」の審査)
-- 合成された音声が「文脈として合っているか」を判定。親友が倒れた悲痛な場面で明るい声になっていないか等を自律検証し、不適切な場合は自動で再演技（Re-perform）を実行。
+### 4. ⚖️ Performance Judge (Automated Quality Verification)
+- An AI judge reviews synthesized lines in narrative context. If a line intended to be grief-stricken is voiced too cheerfully, it triggers an automated re-performance.
 
-### 5. 🎧 M4B オーディオブック書き出し
-- 生成された音声は章ごとのチャプター目次・メタデータが埋め込まれた標準の `.m4b` 形式でエクスポート可能。Apple Books、Audible、各種オーディオブックプレイヤーでそのまま聴くことができます。
+### 5. 🎧 Chaptered M4B Audiobook Export
+- Exports full production audiobooks in standard `.m4b` format, complete with chapter bookmarks, embedded cover artwork, and rich metadata compatible with Apple Books, Audible, and VLC.
 
 ---
 
-## 🏗️ システムアーキテクチャ
+## 🏗️ System Architecture
 
 ```mermaid
 flowchart TD
     subgraph Frontend["🖥️ Desktop Frontend (Qt6 / QML + C++20)"]
-        UI["Mobbin-Style Modern UI\n(Bookshelf / Player / Casting / Studio)"]
+        UI["Modern Dark UI\n(Bookshelf / Player / Casting / Settings)"]
         Bridge["WorkerBridge (C++ Native Core)"]
         UI <--> Bridge
     end
@@ -101,158 +104,159 @@ flowchart TD
         Bridge <--> JSONRPC
     end
 
-    subgraph Backend["🤖 AI Engine Runtime (Python 3.11+)"]
-        Worker["EngineWorker (Coordinator)"]
+    subgraph Backend["🐍 Python Acting Engine (workers/python)"]
+        Worker["worker.py (RPC Dispatcher)"]
+        Analyzer["Story Analyzer (Ollama / Gemini / Heuristic)"]
+        Director["Casting & Acting Director"]
+        Memory["MemoryEngine (SQLite FTS5 + Relationships)"]
+        TTSClient["TTS Layer (VOICEVOX / Edge-TTS / Kokoro / Custom)"]
+        Mastering["Audio Mastering & M4B Exporter (FFmpeg)"]
+
         JSONRPC <--> Worker
-
-        subgraph CoreLogic["Core Intelligence"]
-            Analyzer["Story Analyzer (Ollama / Local LLM)"]
-            Memory["Memory Engine (SQLite SSOT + FTS5)"]
-            Director["Voice Director & Casting"]
-            Judge["Performance Judge"]
-        end
-
-        subgraph TTSLayer["Audio Synthesis Layer"]
-            TTS["TTS Adapter (Irodori / SBV2 / Edge-TTS)"]
-            FFmpeg["FFmpeg (M4B Chapters & Audio Stitching)"]
-        end
-
         Worker --> Analyzer
-        Worker --> Memory
         Worker --> Director
-        Director --> TTS
-        TTS --> Judge
-        TTS --> FFmpeg
+        Worker --> Memory
+        Worker --> TTSClient
+        Worker --> Mastering
+    end
+
+    subgraph Storage["💾 Single Source of Truth"]
+        DB[("story.db (SQLite)")]
+        AudioFiles[("Audio Cache & Output")]
+        Memory <--> DB
+        Director <--> DB
+        Mastering --> AudioFiles
     end
 ```
 
 ---
 
-## 🚀 クイックスタート (Getting Started)
+## 🚀 Getting Started
 
-### 前提条件
+### Prerequisites
 - **OS**: Windows 11 / 10 (64-bit)
-- **C++ / Qt ビルド環境**: MSYS2 (MinGW-w64) または Qt 6.5+ (QuickControls2, Multimedia)
+- **C++ / Qt Environment**: MSYS2 (MinGW-w64) with Qt 6.5+ (Quick, QuickControls2, Multimedia)
 - **Python**: 3.11+
-- **音声処理**: FFmpeg（PATHに登録されていること）
+- **Audio Processing**: FFmpeg (available in system PATH)
 
-### 1. リポジトリのクローン
+### 1. Clone the Repository
 ```bash
 git clone https://github.com/Yato-Works/AIStoryActingEngine.git
 cd AIStoryActingEngine
 ```
 
-### 2. Python エンジンのセットアップ
+### 2. Set Up the Python Engine
 ```bash
 cd workers/python
 python -m venv .venv
-# Windows
+
+# On Windows
 .venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt -r requirements-dev.txt
+cd ../..
 ```
 
-### 3. テストの実行 (全280+テスト検証)
+### 3. Run Automated Tests (280+ tests)
 ```bash
-# プロジェクトルートにて
+# Run pytest from the repository root
 pytest
 ```
 
-### 4. デスクトップアプリのビルド & 起動
-PowerShellからワンステップでビルドおよび起動が可能です：
-
+### 4. Build & Launch the Desktop App
 ```powershell
-# デスクトップUIのビルド (Qt6 / Ninja / MinGW)
+# Build the Qt6 desktop application (Ninja / MinGW)
 .\desktop\build.ps1
 
-# アプリケーションの起動
+# Launch the application
 .\run_gui.ps1
 ```
 
 ---
 
-## 🎨 声質アーキタイプ一覧 (Preset Voice Archetypes)
+## 🎨 Preset Voice Archetypes
 
-本プロジェクトでは、商標権・パブリシティ権・肖像権および声の利用規約に配慮し、実在の声優名やアニメキャラクター名は一切使用しておりません。  
-代わりに、音響特性と役柄に基づいた汎用アーキタイプを提供しています：
+To ensure full compliance with copyright, publicity rights, and voice actor terms of service, AISAE uses generic acoustic archetypes rather than real voice actor names:
 
-| プリセット名 | 声質カテゴリー | 音響特性 / 演出イメージ |
+| Preset ID | Category | Acoustic Characteristics / Acting Profile |
 |---|---|---|
-| `Test_Voice1` | 無頼・ハスキー青年 | 少しハスキーで乾いた野太い低音、ぶっきらぼうな話し方 |
-| `Test_Voice2` | 冷静・知的参謀 | キレのある低音、命令口調、感情の波を抑えたクールな響き |
-| `Test_Voice3` | 重厚・歴戦の男 | 腹の底から響く超低音、掠れを含んだ威厳ある語り口 |
-| `Test_Voice4` | 皮肉・渋み主人公 | 太く低い男声、気だるげでツッコミ口調、やれやれ感 |
-| `Test_Voice5` | 正統派・熱血青年 | 芯の通った爽やかな男性声、ハキハキとした勇敢な響き |
-| `Test_Voice6` | 余裕・兄貴肌 | 色気のある落ち着いた青年声、飄々として余裕のある甘い低音 |
-| `Test_Voice7` | 癒やし・清楚ヒロイン | 透明感のある甘い少女声、柔らかく癒やされる自然な中高音 |
-| `Test_Voice8` | 凛冽・高貴令嬢 | 知的で凛とした令嬢声、澄み渡るシルキーなトーン、丁寧な話し方 |
-| `Test_Voice9` | 元気・マスコット妖精 | 愛らしく弾むようなハイトーン、天真爛漫で表情豊かな話し方 |
-| `Test_Voice10` | 強がり・ツンデレ少女 | ハリのある高音、少しツンツンした早口、感情豊かな強がり |
-| `Test_Voice11` | 爽やか青年 | 自然な地声、親しみやすく丁寧な好青年トーン |
+| `Test_Voice1` | Rogue / Husky Youth | Dry, husky, resonant masculine baritone; blunt delivery |
+| `Test_Voice2` | Cool / Tactical Strategist | Crisp, low, authoritative tone; restrained emotional variation |
+| `Test_Voice3` | Veteran / Battle-hardened | Deep, chest-resonant bass with subtle gravel and commanding weight |
+| `Test_Voice4` | Sarcastic / Gritty Protagonist | Resonant male tone with world-weary sigh and tsukkomi bite |
+| `Test_Voice5` | Heroic / Earnest Youth | Clear, bright, brave masculine timbre with energetic articulation |
+| `Test_Voice6` | Charismatic / Older Brother | Smooth, suave, mature young male voice with relaxed pacing |
+| `Test_Voice7` | Gentle / Pure Heroine | Soft, airy, crystalline female voice with soothing warmth |
+| `Test_Voice8` | Noble / Dignified Lady | Refined, poised, silky high-register voice with articulate diction |
+| `Test_Voice9` | Playful / Energetic Fairy | Bouncy, expressive high-pitch timbre with innocent cadence |
+| `Test_Voice10` | Tsundere / Spirited Girl | Bright, sharp vocal quality with rapid, emotionally reactive pacing |
+| `Test_Voice11` | Friendly / Courteous Youth | Natural, approachable everyday male voice with polite inflection |
 
 ---
 
 ## 📋 Current Status
 
-> **This project is in Early Preview / Demo stage.** The architecture, engine core, and desktop UI are real and functional — not mockups. However, many planned features are still under development.
+> **This project is in the Early Preview / Demo stage.** The core architecture, database persistence, and desktop GUI are functional and running locally. However, many production features remain in active development.
 
-### ✅ What works today
-- Qt6/C++20 desktop app with dark-themed UI (Bookshelf, Player, Casting Studio, Voice Lab, Settings, Studio Logs)
-- Python engine with stdio JSON-RPC IPC — story analysis, character extraction, chapter parsing
-- Voice profile creation, pitch/pace/energy tuning, and preview playback
-- Casting system with character-to-voice assignment & persistence (SQLite SSOT)
-- Emotion emoji-driven acting parameter injection
-- Performance Judge (automated re-performance for bad emotional context)
-- M4B audiobook export with chapter markers
-- Settings page for binding local TTS (VOICEVOX, Edge-TTS, Custom OpenAI-compatible) and LLM (Ollama, Gemini)
-- 281+ automated tests
+### ✅ What Works Today
+- **Qt6/C++20 Desktop App**: Dark-themed UI with Bookshelf, Player, Casting Studio, Voice Lab, Settings, and Studio Logs.
+- **Python Engine over stdio JSON-RPC**: Story analysis, character extraction, chapter parsing, and memory management.
+- **Voice Studio**: Custom voice profile creation, pitch/pace/energy tuning, and live preview playback.
+- **Casting System**: Character-to-voice assignment and persistence (SQLite Single Source of Truth).
+- **Acting Emojis**: Dynamic emotion nuance injection into synthesis payloads.
+- **Performance Judge**: Automated verification and re-performance triggers for out-of-character audio.
+- **M4B Export**: Standard audiobook generation with chapter marks.
+- **Settings Page**: Configurable TTS bindings (VOICEVOX, Edge-TTS, Custom) and LLM options (Ollama, Gemini API key).
+- **Test Suite**: 281 automated tests passing cleanly.
 
-### 🚧 What's still in progress
-- Advanced VRAM management & batch TTS inference optimization
-- OCR-based paper book / image scan import
-- Mobile player (Flutter)
-- Community voice preset sharing
-- Polished ComboBox dark-theme styling (Qt native widgets)
-- Persistent settings save to disk (currently in-memory only in the demo)
+### 🚧 What's in Progress
+- Advanced VRAM management and batch TTS inference optimization.
+- OCR document scanner for physical book / manga scan import.
+- Cross-platform mobile player (Flutter).
+- Community voice preset sharing hub.
+- Persistent desktop settings save to disk (currently stored in-memory during session).
 
 ---
 
-## ⚙️ 環境変数設定 (Environment Configuration)
+## ⚙️ Environment Configuration
 
-`.env.example` を `.env` にコピーして各項目を設定してください：
+Copy `.env.example` to `.env` to configure optional cloud LLM or custom TTS endpoints:
 
 ```bash
 cp .env.example .env
 ```
 
-| 変数名 | 説明 | 例 |
+| Variable | Description | Example |
 |---|---|---|
-| `GEMINI_API_KEY` | Google Gemini API キー（脚本解析AIに使用） | `AIzaSy...` |
-| `GEMINI_MODEL` | Gemini モデル名 | `gemini-2.5-flash` |
-| `IRODORI_HOST` | Irodori-TTS サーバーURL | `http://127.0.0.1:8088` |
+| `GEMINI_API_KEY` | Google Gemini API Key (used for script analysis) | `AIzaSy...` |
+| `GEMINI_MODEL` | Gemini Model Name | `gemini-2.5-flash` |
+| `IRODORI_HOST` | Custom TTS Server URL | `http://127.0.0.1:8088` |
 
-> **💡 Tip**: Gemini API キーはデスクトップアプリの **Settings > 脚本・演技指示 AI** セクションからも入力可能です（Google Gemini API を選択時）。
-
----
-
-## 🗺️ ロードマップ (Roadmap)
-
-- [x] **Phase 0**: PoC（Python単体でのキャラクター解析と音声合成）
-- [x] **Phase 1**: SQLiteによる物語状態・記憶（Memory Engine）の永続化
-- [x] **Phase 2**: Character Intelligence & External/Internal デュアルボイス
-- [x] **Phase 2.5**: 中断・再開可能なジョブパイプライン（Job System）
-- [x] **Phase 3**: Qt6/QML + C++20 による超美麗モダン・デスクトップアプリ
-- [x] **Phase 3.5**: 感情絵文字（Acting Emojis）演出 & Performance Judge
-- [ ] **Phase 4**: ローカルTTS統合の強化（VRAM自動管理・バッチ推論最適化）
-- [ ] **Phase 5**: OCR連携による紙書籍・画像スキャンからの直接取り込み
-- [ ] **Phase 6**: モバイルプレイヤー（Flutter製・スマートフォンでの持ち歩き視聴）
-- [ ] **Phase 7**: コミュニティ機能（ボイスプリセット・辞書の共有）
+> **💡 Tip**: You can also enter and manage your Gemini API key directly from the desktop app under **Settings > LLM Director Binding**.
 
 ---
 
-## 📄 ライセンス & コントリビューション
+## 🗺️ Roadmap
 
-本プロジェクトは [MIT License](LICENSE) の下で公開されています。  
-バグ報告、機能提案、Pull Requestは大歓迎です！
+- [x] **Phase 0**: Proof-of-Concept (Python script analysis & standalone TTS)
+- [x] **Phase 1**: SQLite Narrative Memory Engine (FTS5 search + state tracking)
+- [x] **Phase 2**: Character Intelligence & External/Internal Dual-Voice System
+- [x] **Phase 2.5**: Resumable & Cancellable Background Job Pipeline
+- [x] **Phase 3**: Qt6/QML + C++20 Native Desktop Application
+- [x] **Phase 3.5**: Acting Emojis & Contextual Performance Judge
+- [ ] **Phase 4**: Enhanced Local TTS Integration (VRAM optimization & batch generation)
+- [ ] **Phase 5**: Optical Character Recognition (OCR) for physical book imports
+- [ ] **Phase 6**: Companion Mobile Player (Flutter)
+- [ ] **Phase 7**: Community Presets & Pronunciation Dictionary Sharing
+
+---
+
+## 📄 License & Contributing
+
+This project is licensed under the [MIT License](LICENSE).
+
+Contributions, issue reports, feature suggestions, and pull requests are very welcome!
 
 <div align="center">
   <sub>Built with ❤️ by the AISAE Open Source Community</sub>

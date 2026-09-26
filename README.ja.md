@@ -45,6 +45,24 @@
 
 ---
 
+## 📸 スクリーンショット & インターフェース
+
+実機で動作しているQt6/QMLデスクトップアプリの実際のスクリーンショットです（AIによる架空生成モックアップではありません）。
+
+| 📚 本棚 & スタジオプレイヤー | 🎭 キャスティングスタジオ & ボイスチューナー |
+| :---: | :---: |
+| <img src="docs/images/aisae_real_preview.png" alt="本棚 & プレイヤー" width="450" /> | <img src="docs/images/aisae_casting_preview.png" alt="キャスティングスタジオ" width="450" /> |
+
+| ⚙️ エンジン設定 (TTS / Gemini / Ollama バインド) |
+| :---: |
+| <img src="docs/images/aisae_settings_preview.png" alt="設定画面" width="600" /> |
+
+- **本棚 & プレイヤー**: 映画ライブラリのように美しい作品一覧、章ごとのシーク、Spotifyスタイルのメディアバー（音声出力時のみ動くcava風波形インジケーター付き）。
+- **キャスティングスタジオ**: 登場人物への声の割り当て、直感的な声質チューナー、Gemini APIによる「キャラクターから声を想像する」機能、安全なプリセットアーキタイプ（`Test_Voice1〜8`）。
+- **エンジン設定**: VOICEVOX、Ollama、OpenAI互換TTS、Gemini APIキーの安全な入力枠（マスク表示）とローカルバインド設定。
+
+---
+
 ## ✨ コア機能
 
 ### 1. 📚 スマート本棚 & ドキュメントインポーター
@@ -120,7 +138,7 @@ flowchart TD
 
 ### 1. リポジトリのクローン
 ```bash
-git clone https://github.com/your-username/AIStoryActingEngine.git
+git clone https://github.com/Yato-Works/AIStoryActingEngine.git
 cd AIStoryActingEngine
 ```
 

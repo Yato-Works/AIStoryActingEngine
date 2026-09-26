@@ -47,8 +47,19 @@
 
 ## 📸 スクリーンショット & インターフェース (Real App Interface)
 
-### 🎙️ Voice Lab & 演技チューニング
-独自のキャラクターボイスプロファイルを作成・チューニング・永続保存。ピッチ・話速・声の芯（Energy）を自在に調整し、リアルタイムに試聴できます。下部にはSpotifyスタイルのシークバーと、音声出力時のみ動くcava風ライブ音波インジケーターを搭載。
+実機で動作しているQt6/QMLデスクトップアプリの実際のスクリーンショットです（AIによる架空生成モックアップではありません）。
+
+| 📚 Bookshelf & Studio Player | 🎭 Casting Studio & Voice Tuner |
+| :---: | :---: |
+| <img src="docs/images/aisae_real_preview.png" alt="Bookshelf & Player" width="450" /> | <img src="docs/images/aisae_casting_preview.png" alt="Casting Studio" width="450" /> |
+
+| ⚙️ Settings & Engine Bindings (TTS / Gemini / Ollama) |
+| :---: |
+| <img src="docs/images/aisae_settings_preview.png" alt="Settings Page" width="600" /> |
+
+- **Bookshelf & Player**: 映画ライブラリのように美しい作品一覧、章ごとのシーク、Spotifyスタイルのメディアバー（音声出力時のみ動くcava風波形インジケーター付き）。
+- **Casting Studio**: 登場人物への声の割り当て、直感的な声質チューナー、Gemini APIによる「キャラクターから声を想像する」機能、安全なプリセットアーキタイプ（`Test_Voice1〜8`）。
+- **Settings**: VOICEVOX、Ollama、OpenAI互換TTS、Gemini APIキーの安全な入力枠（マスク表示）とローカルバインド設定。
 
 ---
 
@@ -127,7 +138,7 @@ flowchart TD
 
 ### 1. リポジトリのクローン
 ```bash
-git clone https://github.com/your-username/AIStoryActingEngine.git
+git clone https://github.com/Yato-Works/AIStoryActingEngine.git
 cd AIStoryActingEngine
 ```
 

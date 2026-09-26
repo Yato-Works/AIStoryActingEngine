@@ -13,6 +13,8 @@
 #include <QCoreApplication>
 
 #include <QQuickStyle>
+#include <QQuickWindow>
+#include <QImage>
 
 #include "WorkerBridge.h"
 
@@ -94,9 +96,21 @@ int main(int argc, char *argv[])
                                  QStringLiteral("path"));
     QCommandLineOption selfTestOpt(QStringLiteral("self-test"),
                                    QStringLiteral("GUI を表示せず worker 接続を確認して終了する"));
+    QCommandLineOption screenshotOpt(QStringLiteral("screenshot"),
+                                     QStringLiteral("ウィンドウのスクリーンショットを保存して終了する"),
+                                     QStringLiteral("path"));
+    QCommandLineOption screenshotPageOpt(QStringLiteral("screenshot-page"),
+                                         QStringLiteral("スクリーンショット撮影時のページ (library, player, casting, voiceStudio, settings, studio)"),
+                                         QStringLiteral("page"));
+    QCommandLineOption screenshotDelayOpt(QStringLiteral("screenshot-delay"),
+                                          QStringLiteral("スクリーンショット撮影までの遅延ミリ秒（既定: 3500）"),
+                                          QStringLiteral("ms"));
     parser.addOption(pythonOpt);
     parser.addOption(workerOpt);
     parser.addOption(selfTestOpt);
+    parser.addOption(screenshotOpt);
+    parser.addOption(screenshotPageOpt);
+    parser.addOption(screenshotDelayOpt);
     parser.process(app);
 
     const QDir repoRoot = findRepoRoot(QCoreApplication::applicationDirPath());
@@ -184,6 +198,55 @@ int main(int argc, char *argv[])
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("bridge"), &bridge);
     engine.loadFromModule(QStringLiteral("AIAE"), QStringLiteral("Main"));
+
+    if (parser.isSet(screenshotOpt)) {
+        const QString savePath = parser.value(screenshotOpt);
+        const QString page = parser.value(screenshotPageOpt);
+        int delay = parser.value(screenshotDelayOpt).toInt();
+        if (delay <= 0) delay = 3500;
+
+        QTimer::singleShot(delay, &app, [&engine, savePath, page, &app, &bridge]() {
+            if (!engine.rootObjects().isEmpty()) {
+                QObject *rootObj = engine.rootObjects().first();
+                if (!page.isEmpty()) {
+                    rootObj->setProperty("currentPage", page);
+                    if (page == QStringLiteral("casting")) {
+                        QVariant currentBook = rootObj->property("currentBook");
+                        if (currentBook.isValid() && !currentBook.isNull()) {
+                            QVariantMap bm = currentBook.toMap();
+                            if (bm.contains("id")) {
+                                bridge.getCastings(bm["id"].toString());
+                            }
+                        }
+                    } else if (page == QStringLiteral("voiceStudio")) {
+                        bridge.listVoiceProfiles();
+                    } else if (page == QStringLiteral("studio")) {
+                        bridge.listEvents(80);
+                    }
+                }
+                QTimer::singleShot(600, [&app, &bridge, rootObj, savePath]() {
+                    QQuickWindow *win = qobject_cast<QQuickWindow*>(rootObj);
+                    if (win) {
+                        QImage img = win->grabWindow();
+                        QFileInfo fi(savePath);
+                        QDir().mkpath(fi.dir().absolutePath());
+                        bool ok = img.save(savePath);
+                        qInfo() << "[Screenshot]" << (ok ? "SUCCESS" : "FAILED")
+                                << "Saved to:" << savePath
+                                << "Size:" << img.width() << "x" << img.height();
+                    } else {
+                        qWarning() << "[Screenshot] root object is not a QQuickWindow";
+                    }
+                    bridge.shutdown();
+                    app.quit();
+                });
+                return;
+            }
+            qWarning() << "[Screenshot] No root objects found";
+            bridge.shutdown();
+            app.quit();
+        });
+    }
 
     return app.exec();
 }

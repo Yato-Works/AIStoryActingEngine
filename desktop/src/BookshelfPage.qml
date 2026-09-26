@@ -147,7 +147,7 @@ Page {
         anchors.topMargin: 0
         anchors.bottomMargin: 115
         clip: true
-        cellWidth: 205; cellHeight: 315
+        cellWidth: 205; cellHeight: 335
         model: page.books
 
         ScrollBar.vertical: ScrollBar { active: true }
@@ -180,7 +180,7 @@ Page {
                 Rectangle {
                     id: coverPoster
                     width: parent.width - 20
-                    height: width * 1.34
+                    height: width * 1.24
                     anchors.top: parent.top
                     anchors.topMargin: 10
                     anchors.horizontalCenter: parent.horizontalCenter

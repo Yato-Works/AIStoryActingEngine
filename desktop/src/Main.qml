@@ -18,7 +18,7 @@ ApplicationWindow {
     property string currentPage: "library"
     property var currentBook: null
     property string statusText: "Worker 起動中…"
-    property bool workerRunning: false
+    property bool workerRunning: bridge ? bridge.running : false
     property string currentSeriesId: ""  // 選択中書籍のシリーズ（キャスティング参照用）
 
     ListModel { id: booksModel }
